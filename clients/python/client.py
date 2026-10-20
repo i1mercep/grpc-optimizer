@@ -25,6 +25,7 @@ def load_jobs(
     diagnostics: bool = False,
     invalid_first: bool = False,
 ) -> tuple[dict[str, Any], list[pb.SolveRequest]]:
+    """Clone a JSON fixture into uniquely named jobs, optionally invalidating the first."""
     sample = json.loads(Path(fixture).read_text())
     jobs = []
     for index in range(count):
@@ -43,6 +44,11 @@ async def outcomes(
     jobs: Sequence[pb.SolveRequest],
     rpc_timeout: float,
 ) -> AsyncIterator[pb.JobOutcome]:
+    """Yield uniform job outcomes for any RPC mode, wrapping unary results.
+
+    Bidirectional mode sends concurrently with receiving and cancels both the
+    call and its producer when iteration exits.
+    """
     if mode == "unary":
         for job in jobs:
             result = await stub.Solve(job, timeout=rpc_timeout)
@@ -53,6 +59,7 @@ async def outcomes(
     elif mode == "client-stream":
 
         async def requests() -> AsyncIterator[pb.SolveRequest]:
+            """Stream jobs while yielding control to the event loop between requests."""
             for job in jobs:
                 yield job
                 await asyncio.sleep(0)
@@ -64,6 +71,7 @@ async def outcomes(
         call = stub.SolveStream(timeout=rpc_timeout)
 
         async def produce() -> None:
+            """Write every job, then half-close the stream so responses can finish."""
             for job in jobs:
                 await call.write(job)
             await call.done_writing()
@@ -80,6 +88,7 @@ async def outcomes(
 
 
 async def run(args: argparse.Namespace) -> None:
+    """Wait for a connection, submit fixture jobs, and print JSON outcomes and job errors."""
     _, jobs = load_jobs(args.fixture, args.jobs, args.diagnostics, args.invalid_first)
     options = [
         ("grpc.max_receive_message_length", 16 * 1024 * 1024),
@@ -107,6 +116,7 @@ async def run(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    """Validate CLI limits and run the selected RPC mode, reporting transport failures."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--endpoint", default=os.environ.get("OPT_GRPC_TARGET", "127.0.0.1:50051"))
     parser.add_argument("--mode", choices=MODES, default="unary")

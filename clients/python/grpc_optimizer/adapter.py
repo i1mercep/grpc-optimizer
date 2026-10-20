@@ -19,6 +19,7 @@ class PreparedModel:
 
 
 def _number(value: Any, name: str) -> float:
+    """Evaluate a Pyomo numeric value, rejecting nonfinite results by name."""
     result = float(pyo.value(value))
     if not math.isfinite(result):
         raise ValueError(f"{name} must be finite")
@@ -26,6 +27,7 @@ def _number(value: Any, name: str) -> float:
 
 
 def _linear(expression: Any, name: str) -> Any:
+    """Expand an expression with fixed values substituted; reject nonlinear terms."""
     repn = generate_standard_repn(expression)
     if not repn.is_linear():
         raise ValueError(f"{name} must be linear")
@@ -113,6 +115,9 @@ def prepare_model(model: Any, request_id: str) -> PreparedModel:
 
 
 def to_solve_request(model: Any, request_id: str = "pyomo") -> tuple[pb.SolveRequest, list[Any]]:
-    """Low-level conversion API; prefer grpc_optimizer.solve for ordinary use."""
+    """Return a wire request and its variables in solution order, omitting objective offsets.
+
+    Prefer grpc_optimizer.solve to restore offsets and load returned values.
+    """
     prepared = prepare_model(model, request_id)
     return prepared.request, list(prepared.variables)

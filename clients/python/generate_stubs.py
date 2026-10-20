@@ -9,6 +9,7 @@ OUTPUT = Path(__file__).parent / "grpc_optimizer" / "_generated"
 
 
 def main() -> None:
+    """Generate protobuf code and type stubs, then rewrite imports for the SDK package."""
     OUTPUT.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         [

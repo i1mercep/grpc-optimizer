@@ -12,16 +12,18 @@ from grpc_optimizer import solve
 
 
 def build_model() -> Any:
+    """Build a two-product profit LP constrained by machine and material capacity."""
     model = pyo.ConcreteModel()
     model.x = pyo.Var(domain=pyo.NonNegativeReals)
     model.y = pyo.Var(domain=pyo.NonNegativeReals)
     model.profit = pyo.Objective(expr=40 * model.x + 30 * model.y, sense=pyo.maximize)
-    model.machine = pyo.Constraint(expr=model.x + model.y <= 100)
-    model.material = pyo.Constraint(expr=2 * model.x + model.y <= 160)
+    model.machine = pyo.Constraint(expr=model.x + model.y <= 100)  # Machine capacity
+    model.material = pyo.Constraint(expr=2 * model.x + model.y <= 160)  # Material capacity
     return model
 
 
 def run(args: argparse.Namespace) -> None:
+    """Solve the example model and print its status and any loaded solution."""
     model = build_model()
     result = solve(model, endpoint=args.endpoint, timeout=args.deadline)
     print(f"Status: {result.status.name}")
@@ -32,6 +34,7 @@ def run(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    """Parse connection options, validate the deadline, and report RPC failures."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--endpoint", default=os.environ.get("OPT_GRPC_TARGET", "127.0.0.1:50051"))
     parser.add_argument("--deadline", type=float, default=30)

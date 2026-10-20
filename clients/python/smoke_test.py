@@ -13,6 +13,7 @@ from pyomo_client import build_model
 
 
 async def check_pyomo(target: str) -> None:
+    """Check sync and async solving, objective offsets, loading, reuse, and infeasibility."""
     # Exercise the public one-call APIs against the Rust server.
     model = build_model()
     model.profit.set_value(model.profit.expr + 7)
@@ -45,6 +46,7 @@ async def check_pyomo(target: str) -> None:
         assert math.isclose(pyo.value(async_model.x), 60, abs_tol=1e-6)
 
     def check_sync_reuse():
+        """Verify repeated solves through one synchronous client against the live server."""
         with PyomoClient(target) as client:
             for _ in range(2):
                 assert client.solve(build_model()).is_optimal
@@ -53,6 +55,7 @@ async def check_pyomo(target: str) -> None:
 
 
 async def main() -> None:
+    """Verify Pyomo APIs, fixture results, streaming errors, and deadlines against a live server."""
     target = os.environ.get("OPT_GRPC_TARGET", "127.0.0.1:50051")
     async with grpc.aio.insecure_channel(target) as channel:
         await asyncio.wait_for(channel.channel_ready(), 10)
@@ -93,6 +96,7 @@ async def main() -> None:
         assert await call.read() is grpc.aio.EOF
 
         async def blocked_requests() -> AsyncIterator[pb.SolveRequest]:
+            """Keep the request stream open without sending jobs to force a deadline expiry."""
             # A tiny solve may beat the client's rounded timeout. Keep the
             # request open instead, so deadline enforcement is deterministic.
             await asyncio.Event().wait()

@@ -40,6 +40,11 @@ class SolveResult:
 
 
 def finish_solve(prepared: PreparedModel, response: pb.SolveResult, *, load_solution: bool) -> SolveResult:
+    """Validate a response and restore the captured objective, including its offset.
+
+    Check the full solution before optionally updating Pyomo variables; malformed
+    responses raise ProtocolError without changing their existing values.
+    """
     if response.request_id != prepared.request.request_id:
         raise ProtocolError("response request_id does not match the submitted model")
     try:

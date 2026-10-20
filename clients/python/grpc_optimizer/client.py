@@ -25,6 +25,7 @@ def _positive(value: float, name: str) -> None:
 def _prepare(
     model: Any, request_id: str | None, timeout: float, time_limit: float | None, diagnostics: bool
 ) -> PreparedModel:
+    """Validate deadlines and capture the model with a request ID and solver options."""
     _positive(timeout, "timeout")
     if time_limit is not None:
         _positive(time_limit, "time_limit")
@@ -36,6 +37,7 @@ def _prepare(
 
 
 def _target(endpoint: str | None) -> str:
+    """Resolve an explicit endpoint, OPT_GRPC_TARGET, or loopback; reject blank targets."""
     target = os.environ.get("OPT_GRPC_TARGET", "127.0.0.1:50051") if endpoint is None else endpoint
     if not target.strip():
         raise ValueError("endpoint must not be empty")
@@ -50,6 +52,7 @@ class PyomoClient:
     """
 
     def __init__(self, endpoint: str | None = None, *, channel: grpc.Channel | None = None) -> None:
+        """Create an owned channel or borrow the caller's channel, but never accept both inputs."""
         if endpoint is not None and channel is not None:
             raise ValueError("provide endpoint or channel, not both")
         self._owned = channel is None
@@ -82,6 +85,7 @@ class PyomoClient:
         return finish_solve(prepared, response, load_solution=load_solution)
 
     def close(self) -> None:
+        """Disable further solves and close an owned channel once; leave borrowed channels open."""
         if not self._closed and self._owned:
             self._channel.close()
         self._closed = True
@@ -99,6 +103,7 @@ class AsyncPyomoClient:
     """Async counterpart of PyomoClient; create and use within one event loop."""
 
     def __init__(self, endpoint: str | None = None, *, channel: grpc.aio.Channel | None = None) -> None:
+        """Create an owned async channel or borrow one bound to the current event loop."""
         if endpoint is not None and channel is not None:
             raise ValueError("provide endpoint or channel, not both")
         self._owned = channel is None
@@ -126,6 +131,7 @@ class AsyncPyomoClient:
         return finish_solve(prepared, response, load_solution=load_solution)
 
     async def close(self) -> None:
+        """Disable further solves and await closure of an owned channel once."""
         if not self._closed and self._owned:
             await self._channel.close()
         self._closed = True
@@ -149,7 +155,7 @@ def solve(
     request_id: str | None = None,
     load_solution: bool = True,
 ) -> SolveResult:
-    """Solve a Pyomo continuous LP and update its variables with one function call."""
+    """Solve a continuous LP with a temporary channel, optionally loading its solution."""
     with PyomoClient(endpoint) as client:
         return client.solve(
             model,
@@ -171,7 +177,7 @@ async def solve_async(
     request_id: str | None = None,
     load_solution: bool = True,
 ) -> SolveResult:
-    """Async one-call solve; suitable for notebooks and existing event loops."""
+    """Await a solve with a temporary channel, optionally loading values into the model."""
     async with AsyncPyomoClient(endpoint) as client:
         return await client.solve(
             model,
