@@ -1,7 +1,11 @@
-.git
-.venv
-target
-clients/python/generated
-**/__pycache__
-.ruff_cache
-.env
+# Send only the inputs copied by Dockerfile.
+**
+!Cargo.toml
+!Cargo.lock
+!build.rs
+!proto/
+!proto/**
+!src/
+!src/**
+!examples/
+!examples/**

@@ -181,6 +181,9 @@ server limits and CPU settings.
 
 ## Run with Docker
 
+Docker uses a slim Rust builder and strips symbols from packaged release binaries
+to reduce image size.
+
 With Docker installed, build the image and start a container:
 
 ```sh
