@@ -1,7 +1,7 @@
 [project]
 name = "grpc-optimizer-clients"
 version = "0.1.0"
-description = "Python and Pyomo clients for grpc-optimizer"
+description = "Solve Pyomo linear models through grpc-optimizer"
 requires-python = ">=3.14,<3.15"
 dependencies = ["grpcio==1.84.0", "protobuf==7.36.2", "pyomo==6.10.1"]
 
@@ -14,12 +14,20 @@ dev = [
     "types-protobuf",
 ]
 
-[tool.uv]
-package = false
+[build-system]
+requires = ["setuptools==84.2.1"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["clients/python"]
+include = ["grpc_optimizer*"]
+
+[tool.setuptools.package-data]
+grpc_optimizer = ["py.typed", "_generated/**/*.pyi"]
 
 [tool.ruff]
 target-version = "py314"
-extend-exclude = ["clients/python/generated"]
+extend-exclude = ["clients/python/generated", "clients/python/grpc_optimizer/_generated"]
 line-length = 120
 
 [tool.ruff.lint]
@@ -39,17 +47,13 @@ select = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["client", "optimization", "pyomo_adapter", "pyomo_client"]
+known-first-party = ["client", "grpc_optimizer", "pyomo_adapter", "pyomo_client"]
 known-third-party = ["google", "grpc", "pyomo"]
 
-[tool.ruff.lint.per-file-ignores]
-# Generated modules become importable after adding their directory to sys.path.
-"clients/python/client.py" = ["E402"]
-"clients/python/pyomo_adapter.py" = ["E402"]
-
 [tool.pyrefly]
-project-includes = ["clients/python/*.py"]
-search-path = ["clients/python", "clients/python/generated"]
+project-includes = ["clients/python/**/*.py"]
+project-excludes = ["clients/python/generated/**", "clients/python/grpc_optimizer/_generated/**"]
+search-path = ["clients/python"]
 python-version = "3.14"
 # Pyomo constructs component attributes dynamically and has no typing contract.
 replace-untyped-imports-with-any = ["pyomo.*"]

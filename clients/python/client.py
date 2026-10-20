@@ -9,13 +9,11 @@ from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 from typing import Any
 
-sys.path.insert(0, str(Path(__file__).parent / "generated"))
-
 import grpc
 from google.protobuf.json_format import MessageToDict, ParseDict
 
-from optimization.v1 import optimizer_pb2 as pb
-from optimization.v1 import optimizer_pb2_grpc as rpc
+from grpc_optimizer._generated.optimization.v1 import optimizer_pb2 as pb
+from grpc_optimizer._generated.optimization.v1 import optimizer_pb2_grpc as rpc
 
 ROOT = Path(__file__).resolve().parents[2]
 MODES = ("unary", "server-stream", "client-stream", "bidi")

@@ -2,13 +2,14 @@
 
 A stateless gRPC service for continuous linear programming, powered by HiGHS.
 It accepts sparse LP models and supports unary, server-streaming, client-streaming,
-and bidirectional calls. Includes Rust and Python clients, a Pyomo adapter,
+and bidirectional calls. Includes Rust and Python clients, a Pyomo SDK,
 example models, and a benchmark CLI.
 
 - [API guide](docs/api.md): models, RPC modes, results, diagnostics, and errors.
 - [Operations guide](docs/operations.md): configuration, resource limits,
   cancellation, deployment, and benchmarking.
 - [Protobuf contract](proto/optimization/v1/optimizer.proto): message and service definitions.
+- [Python SDK guide](docs/python.md): one-call Pyomo solving, connection reuse, and async usage.
 
 ## Quick start
 
@@ -58,8 +59,8 @@ including every message in a stream. Run `just client --help` for all options.
 ## Python client and Pyomo
 
 Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then run
-setup to create a Python 3.14 environment, install locked dependencies, and generate
-protobuf and type stubs. uv downloads Python 3.14 if needed. Keep the server
+setup to create a Python 3.14 environment and install the SDK and locked dependencies.
+uv downloads Python 3.14 if needed. Keep the server
 running in another terminal.
 
 ```sh
@@ -76,12 +77,12 @@ They close the input stream after submission and read all remaining results.
 Python 3.14 is selected by `.python-version` and required by `pyproject.toml`.
 Dependencies and development tools are recorded in `uv.lock`; setup and client
 commands use `--locked` to prevent unexpected dependency changes. After editing
-dependencies, run `uv lock`, then repeat setup. Repeat setup after changing the
-protobuf contract as well.
+dependencies, run `uv lock`, then repeat setup. After changing the protobuf
+contract, run `just python-proto` to regenerate the bundled bindings.
 
 Run `just python-fmt` to format and fix lint issues with Ruff, and
 `just python-check` to check formatting, lint, and types with Ruff and Pyrefly,
-then run converter tests without a server. Generated stubs are excluded from
+then run SDK and converter tests without a server. Generated stubs are excluded from
 formatting and linting; Pyrefly uses their types when checking the client code.
 
 ### Solve a Pyomo model
@@ -97,29 +98,45 @@ For a remote server, use
 The [example](clients/python/pyomo_client.py) builds the production model and prints
 optimal status, `x = 60`, `y = 40`, and objective `3600`.
 
-To reuse [the converter](clients/python/pyomo_adapter.py), run from
-`clients/python` and use your constructed `model` and connected `OptimizerStub`
-as shown in the example:
+Build a Pyomo model and pass it to `solve`. The SDK handles conversion, the
+connection, and loading variable values back into the same model:
 
 ```python
-from pyomo_adapter import to_solve_request
+import pyomo.environ as pyo
+from grpc_optimizer import solve
 
-request, variables = to_solve_request(model, request_id="my-model")
-result = await stub.Solve(request, timeout=30)
-if result.HasField("solution"):
-    for var, value in zip(variables, result.solution.variable_values, strict=True):
-        var.set_value(value)
+model = pyo.ConcreteModel()
+model.x = pyo.Var(domain=pyo.NonNegativeReals)
+model.cost = pyo.Objective(expr=3 * model.x + 7)
+model.demand = pyo.Constraint(expr=model.x >= 2)
+
+result = solve(model)  # Defaults to 127.0.0.1:50051 or OPT_GRPC_TARGET.
+if result.is_optimal:
+    print(pyo.value(model.x))  # 2.0
+    print(result.objective)   # 13.0, including the constant.
 ```
 
-Check `result.status` before treating the solution as optimal. The converter
+Use `solve(model, endpoint="server:50051", timeout=30)` for a remote server.
+In async code, use `await solve_async(model)`; reuse `PyomoClient` or
+`AsyncPyomoClient` for repeated solves. See the [SDK guide](docs/python.md).
+Setup installs the package, so imports work from any working directory.
+For another project, run `uv add /path/to/grpc-optimizer`, or build a wheel with
+`just python-build` and install it with `uv pip install dist/*.whl`.
+The wheel includes protobuf bindings; consumers do not need `protoc` or Rust.
+
+Check `result.status` before treating the solution as optimal. Any feasible
+solution is loaded by default, including a feasible solution returned at a time
+limit. Use `load_solution=False` to leave the model untouched. If there is no
+solution, existing values stay unchanged and `result.objective` is `None`.
+The converter
 supports continuous linear models with one active objective, indexed components,
 fixed variables, and equality or ranged constraints. It substitutes fixed
 variables and requires at least one unfixed variable. Integer, binary, nonlinear,
 and unsupported components raise `ValueError`.
 
-Objective constants stay in Pyomo because the API has no objective offset.
-After loading the solution, evaluate the original objective with `pyo.value(...)`
-to include its constant; the server's objective value excludes it.
+`result.objective` includes objective constants and fixed-variable contributions,
+even with loading disabled. The lower-level `result.raw` exposes server timings
+and diagnostics; its wire objective excludes constants.
 
 ## Example models
 
@@ -196,11 +213,12 @@ Cargo's lockfile. Pass client, benchmark, and test arguments directly to Just:
 | `just fmt` | Format Rust source |
 | `just lint` / `just test` | Check formatting and Clippy / run Rust tests |
 | `just check` | Run lint and Rust tests |
-| `just python-setup` | Sync the locked Python 3.14 environment and generate stubs |
+| `just python-setup` | Install the Python SDK and locked development environment |
+| `just python-proto` / `just python-build` | Regenerate bundled stubs / build the SDK wheel and source archive |
 | `just python-client --help` / `just python-pyomo-client --help` | Show Python client options |
 | `just python-fmt` / `just python-lint` | Format/fix with Ruff / check Ruff and Pyrefly |
-| `just python-unit` / `just python-check` | Run converter tests / static checks and converter tests |
-| `just python-test` | Run Pyomo converter tests and Python interoperability checks |
+| `just python-unit` / `just python-check` | Run SDK tests / static checks and SDK tests |
+| `just python-test` | Run SDK tests and Python interoperability checks |
 | `just docker-build` / `just docker-run` / `just docker-stop` | Build, run, and stop the container |
 
 To verify changes:

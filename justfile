@@ -41,11 +41,17 @@ test *args:
 # Run all local Rust checks.
 check: lint test
 
-# Sync the locked Python 3.14 environment and generate gRPC/type stubs.
+# Install the Python SDK and development tools from the lockfile.
 python-setup:
     uv sync --locked
-    mkdir -p clients/python/generated
-    uv run --locked python -m grpc_tools.protoc -I proto --python_out=clients/python/generated --pyi_out=clients/python/generated --grpc_python_out=clients/python/generated proto/optimization/v1/optimizer.proto
+
+# Regenerate bundled bindings after changing the protobuf contract.
+python-proto:
+    uv run --locked python clients/python/generate_stubs.py
+
+# Build an installable SDK wheel and source archive.
+python-build:
+    uv build
 
 # Run the Python client (requires python-setup).
 python-client *args:
@@ -66,11 +72,11 @@ python-lint:
     uv run --locked ruff check clients/python
     uv run --locked pyrefly check
 
-# Run Python converter tests without a server (requires python-setup).
+# Run Python SDK and converter tests without a server (requires python-setup).
 python-unit:
     uv run --locked python -m unittest discover -s clients/python -p 'test_*.py'
 
-# Run Python static checks and converter tests without a server.
+# Run Python static checks and SDK tests without a server.
 python-check: python-lint python-unit
 
 # Test Pyomo conversion and Python interoperability (requires a running server).

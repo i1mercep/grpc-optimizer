@@ -25,12 +25,17 @@ jobs:
         run: |
           uv python install
           uv sync --locked
-          mkdir -p clients/python/generated
-          uv run --locked python -m grpc_tools.protoc -I proto --python_out=clients/python/generated --pyi_out=clients/python/generated --grpc_python_out=clients/python/generated proto/optimization/v1/optimizer.proto
+          uv run --locked python clients/python/generate_stubs.py
+          git diff --exit-code -- clients/python/grpc_optimizer/_generated
           uv run --locked ruff format --check clients/python
           uv run --locked ruff check clients/python
           uv run --locked pyrefly check
           uv run --locked python -m unittest discover -s clients/python -p 'test_*.py'
+          uv build
+          uv venv /tmp/optimizer-sdk-check
+          uv pip install --python /tmp/optimizer-sdk-check/bin/python dist/*.whl
+          cd /tmp
+          /tmp/optimizer-sdk-check/bin/python -c 'from grpc_optimizer import solve, solve_async, PyomoClient'
       - name: Python interoperability
         shell: bash
         run: |
