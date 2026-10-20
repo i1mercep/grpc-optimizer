@@ -1,0 +1,16 @@
+{
+  "name": "production",
+  "description": "Produce x and y units. Maximize profit 40x+30y, with x+y<=100 machine-hours and 2x+y<=160 kg of material; x,y>=0.",
+  "request": {
+    "request_id": "production", "diagnostics": true,
+    "model": {
+      "sense": 2,
+      "variables": [{"objective":40,"lower":0},{"objective":30,"lower":0}],
+      "constraints": [
+        {"indices":[0,1],"coefficients":[1,1],"upper":100},
+        {"indices":[0,1],"coefficients":[2,1],"upper":160}
+      ]
+    }
+  },
+  "expected_status": 1, "expected_objective": 3600, "expected_values": [60,40]
+}

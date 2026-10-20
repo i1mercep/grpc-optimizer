@@ -1,0 +1,111 @@
+syntax = "proto3";
+package optimization.v1;
+
+service Optimizer {
+  rpc Solve(SolveRequest) returns (SolveResult);
+  rpc SolveBatch(BatchRequest) returns (stream JobOutcome);
+  rpc Collect(stream SolveRequest) returns (BatchResponse);
+  rpc SolveStream(stream SolveRequest) returns (stream JobOutcome);
+}
+
+enum ObjectiveSense {
+  OBJECTIVE_SENSE_UNSPECIFIED = 0;
+  OBJECTIVE_SENSE_MINIMIZE = 1;
+  OBJECTIVE_SENSE_MAXIMIZE = 2;
+}
+
+// All variables are continuous. Omitted bounds mean +/- infinity.
+message Variable {
+  double objective = 1;
+  optional double lower = 2;
+  optional double upper = 3;
+}
+
+message Constraint {
+  // Parallel packed arrays; each index may occur only once per row.
+  repeated uint32 indices = 1;
+  repeated double coefficients = 2;
+  optional double lower = 3;
+  optional double upper = 4;
+}
+
+message LinearProgram {
+  ObjectiveSense sense = 1;
+  repeated Variable variables = 2;
+  repeated Constraint constraints = 3;
+}
+
+message SolveRequest {
+  // Caller chooses unique IDs within a call; the server echoes them verbatim.
+  string request_id = 1;
+  LinearProgram model = 2;
+  bool diagnostics = 3;
+  // Positive seconds, clamped to the server maximum and remaining RPC deadline.
+  optional double time_limit_seconds = 4;
+}
+
+enum SolveStatus {
+  SOLVE_STATUS_UNSPECIFIED = 0;
+  SOLVE_STATUS_OPTIMAL = 1;
+  SOLVE_STATUS_INFEASIBLE = 2;
+  SOLVE_STATUS_UNBOUNDED = 3;
+  SOLVE_STATUS_INFEASIBLE_OR_UNBOUNDED = 4;
+  SOLVE_STATUS_TIME_LIMIT = 5;
+  SOLVE_STATUS_ITERATION_LIMIT = 6;
+  SOLVE_STATUS_INTERRUPTED = 7;
+  SOLVE_STATUS_OTHER_LIMIT = 8;
+  SOLVE_STATUS_UNKNOWN = 9;
+}
+
+message Solution {
+  double objective = 1;
+  repeated double variable_values = 2;
+  // Activities appear only when diagnostics were requested.
+  repeated double constraint_activities = 3;
+  // Present only when HiGHS reports dual feasibility.
+  DualSolution dual = 4;
+}
+
+message DualSolution {
+  repeated double constraint_duals = 1;
+  repeated double reduced_costs = 2;
+}
+
+message Timings {
+  double validation_seconds = 1;
+  double build_seconds = 2;
+  double solve_seconds = 3;
+}
+
+message SolveResult {
+  string request_id = 1;
+  SolveStatus status = 2;
+  // Absent when no feasible primal solution exists, regardless of model status.
+  Solution solution = 3;
+  Timings timings = 4;
+  string solver_status = 5;
+  ExecutionSettings execution = 6;
+}
+
+message ExecutionSettings {
+  uint32 cpu_budget = 1;
+  uint32 solver_threads = 2;
+  uint32 max_concurrent_solves = 3;
+}
+
+message JobError {
+  // Canonical gRPC status code, e.g. INVALID_ARGUMENT=3, RESOURCE_EXHAUSTED=8.
+  int32 code = 1;
+  string message = 2;
+}
+
+message JobOutcome {
+  string request_id = 1;
+  oneof outcome {
+    SolveResult result = 2;
+    JobError error = 3;
+  }
+}
+
+message BatchRequest { repeated SolveRequest jobs = 1; }
+message BatchResponse { repeated JobOutcome outcomes = 1; }

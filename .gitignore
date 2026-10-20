@@ -1,0 +1,6 @@
+/target
+/.venv/
+/clients/python/generated/
+__pycache__/
+*.pyc
+.env

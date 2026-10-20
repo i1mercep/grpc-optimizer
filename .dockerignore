@@ -1,0 +1,6 @@
+.git
+.venv
+target
+clients/python/generated
+**/__pycache__
+.env

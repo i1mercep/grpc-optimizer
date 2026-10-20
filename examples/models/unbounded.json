@@ -1,0 +1,5 @@
+{
+  "name":"unbounded", "description":"Maximize x subject to x>=0, with no upper bound.",
+  "request":{"request_id":"unbounded","model":{"sense":2,"variables":[{"objective":1,"lower":0}]}},
+  "expected_status":3, "expected_objective":null, "expected_values":null
+}

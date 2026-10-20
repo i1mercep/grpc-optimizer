@@ -1,0 +1,5 @@
+{
+  "name":"infeasible", "description":"Minimize x with x>=2 and x<=1 in separate constraints. No feasible point exists.",
+  "request":{"request_id":"infeasible","model":{"sense":1,"variables":[{"objective":1,"lower":2}],"constraints":[{"indices":[0],"coefficients":[1],"upper":1}]}},
+  "expected_status":2, "expected_objective":null, "expected_values":null
+}

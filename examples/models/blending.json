@@ -1,0 +1,16 @@
+{
+  "name": "blending",
+  "description": "Blend a and b kg costing 4 and 2 per kg. Make 100 kg containing at least 20 kg active ingredient, with fractions 0.3 and 0.1. Minimize 4a+2b; a+b=100, 0.3a+0.1b>=20; a,b>=0.",
+  "request": {
+    "request_id": "blending", "diagnostics": true,
+    "model": {
+      "sense": 1,
+      "variables": [{"objective":4,"lower":0},{"objective":2,"lower":0}],
+      "constraints": [
+        {"indices":[0,1],"coefficients":[1,1],"lower":100,"upper":100},
+        {"indices":[0,1],"coefficients":[0.3,0.1],"lower":20}
+      ]
+    }
+  },
+  "expected_status": 1, "expected_objective": 300, "expected_values": [50,50]
+}
