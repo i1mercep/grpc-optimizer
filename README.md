@@ -1,104 +1,99 @@
 # grpc-optimizer
 
-A stateless continuous linear programming service using Tokio, Tonic/Prost, and
-HiGHS. One package, one solver backend, four gRPC call patterns. Includes Rust and
-Python clients, shared example models, and a benchmark CLI.
+A stateless gRPC service for continuous linear programming, powered by HiGHS.
+It accepts sparse LP models and supports unary, server-streaming, client-streaming,
+and bidirectional calls. Includes Rust and Python clients, a Pyomo adapter,
+example models, and a benchmark CLI.
 
-## Run locally
+- [API guide](docs/api.md): models, RPC modes, results, diagnostics, and errors.
+- [Operations guide](docs/operations.md): configuration, resource limits,
+  cancellation, deployment, and benchmarking.
+- [Protobuf contract](proto/optimization/v1/optimizer.proto): message and service definitions.
 
-Requires `just`, Rust 1.88+, a C++17 compiler, CMake, libclang, and `protoc`. HiGHS is built
-from bundled native sources by `highs-sys`; no separately installed solver is needed.
-On Debian/Ubuntu:
+## Quick start
+
+Install `just`, Rust 1.88+, a C++17 compiler, CMake, libclang, and `protoc`.
+On Debian/Ubuntu, install the native build dependencies with:
 
 ```sh
 sudo apt-get install build-essential cmake libclang-dev protobuf-compiler
+```
+
+HiGHS builds from bundled sources; no separate solver installation is needed.
+From the repository root, build and start the server:
+
+```sh
 just build
 just run
 ```
 
-In another terminal:
+In another terminal, check health and solve the production example:
 
 ```sh
 just client --health
-just client --mode unary --model production --diagnostics
+just client --model production --jobs 1 --diagnostics
+```
+
+The health check prints `SERVING`. The solve returns JSON with optimal status,
+variable values `[60, 40]`, and objective `3600`. Stop the server with Ctrl-C.
+
+## Rust client
+
+The client defaults to unary calls, the production model, and three jobs.
+Each job has a unique request ID. Use `--mode` to try the streaming modes:
+
+```sh
 just client --mode server-stream --model transportation
 just client --mode client-stream --model blending
 just client --mode bidi --model production --invalid-first
 ```
 
-`--jobs` defaults to 3. Each job gets a unique request ID. Unary errors terminate
-the CLI with a nonzero exit; other patterns print per-job errors and continue.
-Use `--deadline 5` for an RPC deadline. It covers the entire call, including all
-messages in a stream. Client output is JSON on stdout; errors go to stderr.
-Tonic's transport may report an expired call as `CANCELLED` when its timeout wins
-the race with the handler's `DEADLINE_EXCEEDED` response; both terminate the call.
+`--invalid-first` demonstrates a per-job error while the remaining jobs continue.
+Unary RPC errors exit with a nonzero status; streaming modes print per-job errors
+and continue. Solve output is JSON on stdout, with error messages on stderr.
 
-Environment variables are listed in [.env.example](.env.example). Optionally copy
-it to `.env`; Just loads that file automatically, with existing shell variables
-taking precedence. Binaries run directly read environment variables only. Rust
-clients accept `OPT_ENDPOINT` (an HTTP URI); Python uses `OPT_GRPC_TARGET` (a native
-gRPC `host:port` target).
+Use `--deadline 5` for a five-second RPC deadline. It covers the whole call,
+including every message in a stream. Run `just client --help` for all options.
 
-## Commands
+## Python client and Pyomo
 
-Run `just` or `just --list` to see all recipes. Rust run commands use release
-builds and Cargo's lockfile. Client, benchmark, and test recipes forward arguments
-without requiring an extra `--` before the application options.
-
-| Command | Purpose |
-| --- | --- |
-| `just build` / `just run` | Build release binaries / start the server |
-| `just client --help` | Rust client options, including health checks and all four RPC modes |
-| `just bench --help` | Benchmark options |
-| `just fmt` | Format Rust source |
-| `just lint` / `just test` | Check formatting and Clippy / run Rust tests |
-| `just check` | Run lint and Rust tests |
-| `just python-setup` | Create/update `.venv`, install dependencies, and generate stubs |
-| `just python-client --help` / `just python-test` | Python client / interoperability checks |
-| `just python-pyomo-client --help` | Build a Pyomo model, convert it, and solve over gRPC |
-| `just docker-build` / `just docker-run` / `just docker-stop` | Build, run, and stop the container |
-
-Python clients and interoperability checks require `just python-setup` first.
-Remote client examples, Python tests, and benchmarks other than `--mode direct`
-require a running server. Run it in a separate terminal with `just run`.
-
-## Python client
+With Python and its `venv` module installed, run setup once to install dependencies
+and generate protobuf stubs. Keep the server running in another terminal.
 
 ```sh
 just python-setup
 just python-client --mode bidi --diagnostics
 just python-client --mode client-stream --fixture examples/models/transportation.json
 just python-client --mode server-stream --invalid-first
-just python-test
 ```
 
-The Python stub is generated from the same `.proto` as Rust. Bidirectional clients
-send and receive concurrently, then half-close input and drain remaining results.
-Both clients reuse their channels across jobs.
-Set `PYTHON` to choose the interpreter for setup, for example
-`PYTHON=python3.12 just python-setup`. Repeat setup after changing the protobuf
-contract or Python dependencies.
+The Python client supports the same four modes as Rust. Both clients reuse a
+channel across jobs and send and receive concurrently in bidirectional mode.
+They close the input stream after submission and read all remaining results.
 
-### Pyomo example
+To choose a setup interpreter, use `PYTHON=python3.12 just python-setup`.
+Repeat setup after changing the protobuf contract or Python dependencies.
 
-Create a model using Pyomo expressions and send it to the existing gRPC API:
+### Solve a Pyomo model
+
+After Python setup, run:
 
 ```sh
-just python-setup
-just run                      # keep running in a separate terminal
 just python-pyomo-client
-# Remote server: just python-pyomo-client --endpoint server:50051 --deadline 30
 ```
 
-The [example](clients/python/pyomo_client.py) builds a production model that
-maximizes `40*x + 30*y`, with `x+y <= 100`, `2*x+y <= 160`, and nonnegative
-variables. It prints optimal status, `x = 60`, `y = 40`, and objective `3600`.
-The endpoint also defaults to `OPT_GRPC_TARGET`, as in the other Python client.
+For a remote server, use
+`just python-pyomo-client --endpoint server:50051 --deadline 30`.
+The [example](clients/python/pyomo_client.py) builds the production model and prints
+optimal status, `x = 60`, `y = 40`, and objective `3600`.
 
-Reuse [the converter](clients/python/pyomo_adapter.py) with your own constructed
-Pyomo model:
+To reuse [the converter](clients/python/pyomo_adapter.py), run from
+`clients/python` and use your constructed `model` and connected `OptimizerStub`
+as shown in the example:
 
 ```python
+from pyomo_adapter import to_solve_request
+
 request, variables = to_solve_request(model, request_id="my-model")
 result = await stub.Solve(request, timeout=30)
 if result.HasField("solution"):
@@ -106,121 +101,20 @@ if result.HasField("solution"):
         var.set_value(value)
 ```
 
-Import `to_solve_request` from `pyomo_adapter` when running from `clients/python`;
-`stub` is the generated `OptimizerStub`, as shown in the example. The converter
-supports continuous linear models with exactly one active objective, fixed
-variables, indexed components, and equality/ranged constraints. Integer, binary,
-nonlinear, and unsupported modeling components raise `ValueError`.
-Fixed variables are substituted, and at least one unfixed variable is required.
-Objective constants remain in Pyomo because the wire format has no objective
-offset: evaluate your original objective with `pyo.value(...)` after loading the
-solution. The server's objective value excludes that constant.
+Check `result.status` before treating the solution as optimal. The converter
+supports continuous linear models with one active objective, indexed components,
+fixed variables, and equality or ranged constraints. It substitutes fixed
+variables and requires at least one unfixed variable. Integer, binary, nonlinear,
+and unsupported components raise `ValueError`.
 
-`just python-test` runs converter unit tests before the interoperability checks,
-including the Pyomo example. The server and protobuf contract are unchanged.
-
-## Contract and call patterns
-
-The public contract is [optimizer.proto](proto/optimization/v1/optimizer.proto),
-package `optimization.v1`, service `Optimizer`.
-
-| RPC | Input | Output | Useful for |
-| --- | --- | --- | --- |
-| `Solve` | One complete LP | One result | Simple request/response and concurrent unary calls |
-| `SolveBatch` | Bounded batch of LPs | Results in completion order | Finite workloads with early results |
-| `Collect` | Bounded stream of LPs | One response in submission order | Incremental submission with one final response |
-| `SolveStream` | Open stream of independent LPs | Results in completion order | Continuous job submission and early responses |
-
-These are RPC patterns on reusable HTTP/2 connections, not separate connection
-protocols. Unary calls also multiplex on HTTP/2. Streaming is a behavior choice;
-measure your workload before assuming a speed advantage. Client streaming sends
-complete independent models, not chunks of one model.
-
-A model specifies minimize/maximize, continuous variables with objective
-coefficients and optional bounds, and sparse constraint rows. Each row has equal
-length `indices` and `coefficients` arrays with zero-based variable indices.
-Omitted bounds mean negative/positive infinity. Set `lower: 0` explicitly for
-nonnegative variables. Equality constraints use equal lower and upper bounds.
-All coefficients and explicit bounds must be finite. Duplicate indices in a row,
-reversed bounds, empty variable lists, and unspecified senses are rejected.
-
-Supply request IDs of 1–128 UTF-8 bytes, unique within a call. IDs are echoed;
-uniqueness is the caller's responsibility and is not stored across messages.
-The server does not deduplicate or retry jobs. Reusing an ID resubmits work.
-
-`SolveResult.status` describes optimization, independently of RPC success. It
-preserves infeasible, unbounded, infeasible-or-unbounded, time/iteration/other limits,
-and interrupted outcomes. A `solution` is present only if HiGHS reports primal
-feasibility; it may exist for an unbounded or limit-reached model and does **not**
-imply optimality. Check status before treating its objective as optimal.
-
-Diagnostics add constraint activities, and a dual submessage only when HiGHS
-reports dual feasibility. Duals follow HiGHS's objective-sense sign convention;
-reduced costs satisfy `c - Aᵀy`. Degenerate optima can have different valid duals.
-Timings measure validation, native-model construction, and native solve wall time;
-they exclude network, encoding, result extraction, and executor scheduling.
-Execution settings report the server's CPU budget, threads, and solve concurrency.
-
-Malformed unary inputs produce `INVALID_ARGUMENT`; capacity limits produce
-`RESOURCE_EXHAUSTED`; native execution failures produce `INTERNAL`. Other methods
-embed those canonical gRPC codes in correlated `JobError` outcomes and keep going.
-Transport errors, finite batch overflow, collected response overflow, deadlines,
-and shutdown terminate the whole RPC. No partial `Collect` response is returned.
-
-## Architecture and resource limits
-
-`model` validates plain input; `solver` constructs and solves a HiGHS model;
-`engine` owns admission and native-work lifecycle; `grpc` implements transport and
-streaming. `config` centralizes settings and `samples` loads/generates models.
-Generated protobuf types are the shared data contract. No database, broker,
-generic solver abstraction, or separate crate workspace is required.
-
-Every native instance is created, solved, and destroyed within a blocking worker.
-Tokio handles network I/O. A global semaphore is acquired before spawning native
-work, avoiding a hidden unbounded blocking queue. Requests fail fast when global
-solver capacity is occupied; retry with backoff or reduce client concurrency.
-
-By default each job uses one HiGHS thread, and concurrent solves equal available
-CPUs. Override `OPT_CPU_BUDGET`, `OPT_SOLVER_THREADS`, and
-`OPT_MAX_CONCURRENT_SOLVES`; concurrency × threads must fit the CPU budget. Keep
-thread settings constant for the lifetime of a process. More solver threads do
-not guarantee faster LP solves. Benchmark fewer concurrent multithreaded jobs
-against more single-threaded jobs, restarting the service between settings.
-
-Defaults are 32 admitted optimization RPCs, 16 MiB protobuf messages, 16 MiB
-collected responses, 64 jobs per finite batch, and 8 outstanding jobs per stream
-(further limited by global solve concurrency). The per-stream window includes
-completed results awaiting consumption. Backpressure stops reading inputs when
-the window fills. HTTP/2 and client libraries also have their own bounded buffers.
-The RPC admission cap applies to application handlers; it is not a global socket
-or pre-decode memory cap. Set ingress connection limits for external deployments.
-
-Individual models default to at most 100,000 variables, 100,000 rows, and 1,000,000
-stored coefficients. These are admission limits, not native memory guarantees.
-Tune them and the concurrency to the memory available to each instance.
-
-The default solver budget is 30 seconds, with an absolute server maximum of 300.
-Clients may request a positive `time_limit_seconds`, clamped to that maximum and
-the remaining RPC deadline after construction. Cancellation is checked before
-native solve and after result extraction. During simplex and interior-point
-solving, native interrupt callbacks check for client disconnects and expired RPC
-deadlines in all four call patterns. Stream termination also cancels its unfinished
-jobs. A solver budget still produces `TIME_LIMIT`; RPC cancellation and deadlines
-remain transport errors rather than successful solve responses.
-
-Interruption is cooperative: presolve, factorization, and other native work between
-callbacks may delay it. Neither callbacks nor HiGHS time limits provide a hard
-execution cutoff. Each execution permit remains held until the blocking worker
-finishes native cleanup, including after its async caller disappears. Shutdown
-marks health not-serving, stops admissions/stream input, and drains admitted native
-work; jobs in terminated streams receive cancellation, while active unary solves
-can finish normally.
+Objective constants stay in Pyomo because the API has no objective offset.
+After loading the solution, evaluate the original objective with `pyo.value(...)`
+to include its constant; the server's objective value excludes it.
 
 ## Example models
 
-Fixtures in [examples/models](examples/models) are read by both clients. JSON uses
-the protobuf field names, numeric sense `1=minimize`, `2=maximize`, and optional
-expected answers. Descriptions explain units and variable order.
+Both clients read fixtures from [examples/models](examples/models). Descriptions
+explain units and variable order; fixtures may include expected answers.
 
 | Model | Formulation | Optimum |
 | --- | --- | --- |
@@ -228,54 +122,39 @@ expected answers. Descriptions explain units and variable order.
 | Transportation | Supplies `[20,30]`, demands `[10,15,25]`, costs `[[2,4,6],[3,1,2]]` | Ship `[[10,10,0],[0,5,25]]`, cost `115` |
 | Blending | Min `4a+2b`; `a+b=100`, `.3a+.1b≥20`, `a,b≥0` | `(50,50)`, cost `300` |
 
-Infeasible and unbounded fixtures demonstrate non-optimal statuses. Seeded
-generators create feasible production/resource-allocation and transportation LPs:
+Infeasible and unbounded fixtures demonstrate non-optimal statuses.
+Generate a larger feasible model or export one for the Python client:
 
 ```sh
-just client --generate production --size 10000 --mode unary --jobs 1
+just client --generate production --size 10000 --jobs 1
 just client --generate transportation --size 100 --export /tmp/transportation.json
 just python-client --fixture /tmp/transportation.json --jobs 1
 ```
 
-Production size means products, with up to four resource coefficients each;
-transportation size means sources and destinations, giving `size²` routes and
-`2×size²` matrix entries. The generators use a seeded SplitMix64 sequence.
+Export does not require a server. Production size is the number of products,
+with up to four resource coefficients each. Transportation size is the number
+of sources and destinations, giving `size²` routes and `2×size²` matrix entries.
+Both generators use seeded SplitMix64 sequences.
 
-## Measure performance
+## Configuration
 
-Run the release server separately. The benchmark defaults to concurrency 1 so it
-also works on a one-CPU host. Increase concurrency together with server capacity.
+Optionally copy [.env.example](.env.example) to `.env`. Just loads it automatically;
+existing shell variables take precedence. Directly launched binaries read the
+environment only.
 
-```sh
-RUST_LOG=warn just run
-```
+| Setting | Default | Used by |
+| --- | --- | --- |
+| `OPT_LISTEN_ADDR` | `127.0.0.1:50051` | Server |
+| `OPT_ENDPOINT` | `http://127.0.0.1:50051` | Rust client and benchmark |
+| `OPT_GRPC_TARGET` | `127.0.0.1:50051` | Python clients |
 
-```sh
-just bench --family production --size 100 --jobs 1000 --concurrency 4
-just bench --family transportation --size 100 --jobs 20 --concurrency 1
-just bench --mode direct --family production --size 1000
-```
+Rust endpoints use an HTTP URI; Python endpoints use a gRPC `host:port` target.
+See the [operations guide](docs/operations.md#configuration-and-limits) for all
+server limits and CPU settings.
 
-Each mode solves identical seeded inputs. Direct mode uses the same in-process
-validation/engine/solver path without network serialization. Concurrent unary
-uses cloned stubs sharing one channel. Server/client streaming use batches of up
-to the chosen concurrency; bidi keeps one stream open with a bounded outstanding
-window. Batch latency starts at batch submission; `Collect` latency includes
-waiting for the complete batch. Bidi latency starts after an outstanding slot is
-available. A bidi deadline covers its entire measured stream.
+## Run with Docker
 
-Each JSON report includes dimensions, seed, concurrency, actual execution settings,
-connection setup, per-mode warm-up, throughput, p50/p95/p99 job latency, separate
-server validation/build/solve distributions, and failures. Failed or missing jobs
-are counted, not silently omitted. Percentiles include failures; server phase
-timings exist only for returned solve results. Setup and warm-up are excluded from
-the measured interval. Input models are prepared before the measured interval.
-
-Direct and remote runs may compete with other host work. Run on controlled
-hardware, record CPU/memory limits, and compare repeated trials. No universal
-latency or streaming speed-up is claimed.
-
-## Container deployment
+With Docker installed, build the image and start a container:
 
 ```sh
 just docker-build
@@ -284,27 +163,35 @@ just client --health
 just docker-stop
 ```
 
-The image and container name default to `grpc-optimizer`; port publishing defaults
-to `127.0.0.1:50051:50051`. Override them with `OPT_DOCKER_IMAGE`,
-`OPT_DOCKER_CONTAINER`, and `OPT_DOCKER_PUBLISH` in your shell or `.env`.
-Docker build/run options pass through to the corresponding command. Server
-configuration must be passed explicitly with `-e NAME=value` or `--env-file`;
-loading `.env` in Just does not forward all variables into the container. When
-using an env file copied from `.env.example`, add `-e OPT_LISTEN_ADDR=0.0.0.0:50051`
-so the service listens on the container network interface.
+Stop any local server using port 50051 first. The image and container default to
+`grpc-optimizer`, with port publishing set to `127.0.0.1:50051:50051`.
+Override these with `OPT_DOCKER_IMAGE`, `OPT_DOCKER_CONTAINER`, and
+`OPT_DOCKER_PUBLISH` in your shell or `.env`.
 
-The runtime is non-root and includes a gRPC health probe. If overriding the listen
-port, override the container health command too. The service implements standard
-gRPC health checks for `optimization.v1.Optimizer` and v1 reflection.
+Docker recipes forward build/run options. Pass server settings explicitly with
+`-e NAME=value` or `--env-file`; Just's `.env` values are not automatically passed
+into the container. With an env file copied from `.env.example`, also pass
+`-e OPT_LISTEN_ADDR=0.0.0.0:50051` to listen on the container interface.
+See [deployment notes](docs/operations.md#deployment) for health checks and ingress.
 
-Local defaults use loopback and plaintext. Deploy on a private network or terminate
-TLS/authentication at a gRPC-capable ingress; built-in authentication and public
-hosting are outside this version. Replicas have no shared state. Established
-streams remain attached to one replica, so distributing load may require multiple
-channels or client-side/load-balancer support for new RPCs. Results are not durable
-and disconnected jobs cannot be resumed.
+## Development commands
 
-## Verify
+Run `just` to list all recipes. Rust build/run recipes use release builds and
+Cargo's lockfile. Pass client, benchmark, and test arguments directly to Just:
+
+| Command | Purpose |
+| --- | --- |
+| `just build` / `just run` | Build release binaries / start the server |
+| `just client --help` / `just bench --help` | Show client / benchmark options |
+| `just fmt` | Format Rust source |
+| `just lint` / `just test` | Check formatting and Clippy / run Rust tests |
+| `just check` | Run lint and Rust tests |
+| `just python-setup` | Install Python dependencies and generate stubs |
+| `just python-client --help` / `just python-pyomo-client --help` | Show Python client options |
+| `just python-test` | Run Pyomo converter tests and Python interoperability checks |
+| `just docker-build` / `just docker-run` / `just docker-stop` | Build, run, and stop the container |
+
+To verify changes:
 
 ```sh
 just check
@@ -312,13 +199,10 @@ just build
 just python-test
 ```
 
-To select Rust tests, use e.g. `just test --test models` or
-`just test --test grpc -- --nocapture`. Python checks need a running server.
+Python checks require `just python-setup` and a running server. Select Rust tests
+with `just test --test models` or `just test --test grpc -- --nocapture`.
+CI runs formatting, Clippy, Rust tests, and Python interoperability, including
+the Pyomo example. Tests cover known optima, diagnostics, validation, all RPC
+modes, limits, backpressure, deadlines, cancellation, and shutdown.
 
-Tests cover known optima, feasibility/objective/dual checks, seeded generation,
-input validation, native limits, all RPC patterns on loopback HTTP/2, per-job
-errors, backpressure, deadlines, finite limits, and cancellation/shutdown lifecycle.
-Native tests synchronize with simplex/IPM callbacks before cancelling or expiring
-a solve. Loopback tests verify disconnects and deadlines in all four RPC patterns,
-permit retention until native exit, and recovery of solver capacity.
-CI runs formatting, Clippy, Rust tests, and Python interoperability.
+For performance comparisons, see [benchmarking](docs/operations.md#benchmarking).
