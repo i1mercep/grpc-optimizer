@@ -5,6 +5,9 @@ import math
 import os
 
 from client import MODES, ROOT, grpc, load_jobs, outcomes, pb, rpc
+from pyomo_adapter import to_solve_request
+from pyomo_client import build_model
+import pyomo.environ as pyo
 
 
 async def main():
@@ -12,6 +15,18 @@ async def main():
     async with grpc.aio.insecure_channel(target) as channel:
         await asyncio.wait_for(channel.channel_ready(), 10)
         stub = rpc.OptimizerStub(channel)
+        model = build_model()
+        request, variables = to_solve_request(model, "pyomo-production")
+        result = await stub.Solve(request, timeout=10)
+        assert result.request_id == "pyomo-production", result
+        assert result.status == pb.SOLVE_STATUS_OPTIMAL, result
+        assert result.HasField("solution"), result
+        for var, value in zip(variables, result.solution.variable_values, strict=True):
+            var.set_value(value)
+        assert math.isclose(pyo.value(model.x), 60, abs_tol=1e-6)
+        assert math.isclose(pyo.value(model.y), 40, abs_tol=1e-6)
+        assert math.isclose(pyo.value(model.profit), 3600, abs_tol=1e-6)
+        assert math.isclose(result.solution.objective, 3600, abs_tol=1e-6)
         for path in sorted((ROOT / "examples/models").glob("*.json")):
             sample, jobs = load_jobs(path, 2, diagnostics=True)
             for mode in MODES:
@@ -53,7 +68,7 @@ async def main():
                                     grpc.StatusCode.CANCELLED)
         else:
             raise AssertionError("expired call unexpectedly succeeded")
-    print("Python interoperability: all fixtures and four RPC patterns passed")
+    print("Python interoperability: Pyomo, all fixtures and four RPC patterns passed")
 
 
 if __name__ == "__main__":

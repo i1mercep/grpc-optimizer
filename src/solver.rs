@@ -9,12 +9,34 @@ use crate::{
     pb::{DualSolution, ObjectiveSense, Solution, SolveRequest, SolveResult, SolveStatus, Timings},
 };
 
+mod interrupt;
+
+#[cfg(test)]
+pub(crate) use interrupt::TestControl;
+
 /// Synchronous entry point. Call only from a blocking worker (or the direct benchmark).
 pub fn solve(
     request: SolveRequest,
     config: &Config,
     deadline: Option<Instant>,
     cancel: &CancellationToken,
+) -> Result<SolveResult> {
+    solve_inner(
+        request,
+        config,
+        deadline,
+        cancel,
+        #[cfg(test)]
+        None,
+    )
+}
+
+pub(crate) fn solve_inner(
+    request: SolveRequest,
+    config: &Config,
+    deadline: Option<Instant>,
+    cancel: &CancellationToken,
+    #[cfg(test)] test_control: Option<std::sync::Arc<TestControl>>,
 ) -> Result<SolveResult> {
     check_budget(deadline, cancel)?;
     let start = Instant::now();
@@ -79,9 +101,13 @@ pub fn solve(
         .map_err(|e| Error::Internal(format!("HiGHS time limit: {e:?}")))?;
     let build_seconds = build_start.elapsed().as_secs_f64();
     let solve_start = Instant::now();
-    let solved = native
-        .try_solve()
-        .map_err(|s| Error::Internal(format!("HiGHS solve failed: {s:?}")))?;
+    let solved = interrupt::solve(
+        native,
+        cancel,
+        deadline,
+        #[cfg(test)]
+        test_control,
+    )?;
     let solve_seconds = solve_start.elapsed().as_secs_f64();
     let native_status = solved.status();
     let status = status(native_status)?;
@@ -107,6 +133,7 @@ pub fn solve(
     } else {
         None
     };
+    check_budget(deadline, cancel)?;
     tracing::info!(request_id = %request.request_id, ?status, validation_seconds, build_seconds, solve_seconds, "optimization completed");
     Ok(SolveResult {
         request_id: request.request_id,
@@ -167,6 +194,50 @@ fn status(status: HighsModelStatus) -> Result<SolveStatus> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn active_simplex_and_ipm_solves_observe_cancellation_and_deadlines() {
+        for algorithm in ["simplex", "ipm"] {
+            for expire in [false, true] {
+                let request =
+                    crate::samples::generate(crate::samples::Family::Production, 100, 42).unwrap();
+                let (control, entered, release) = TestControl::new(&request.request_id, algorithm);
+                let cancel = CancellationToken::new();
+                let token = cancel.clone();
+                let deadline = expire.then(|| Instant::now() + Duration::from_secs(1));
+                let hook = control.clone();
+                let worker = tokio::task::spawn_blocking(move || {
+                    solve_inner(request, &Config::default(), deadline, &token, Some(hook))
+                });
+                tokio::time::timeout(Duration::from_secs(5), entered)
+                    .await
+                    .expect("native callback must start")
+                    .unwrap();
+                if let Some(deadline) = deadline {
+                    crate::grpc::wait_deadline(Some(deadline)).await;
+                } else {
+                    cancel.cancel();
+                }
+                release.send(()).unwrap();
+                let result = tokio::time::timeout(Duration::from_secs(5), worker)
+                    .await
+                    .expect("native interruption must return")
+                    .unwrap();
+                if expire {
+                    assert!(matches!(result, Err(Error::Deadline)), "{result:?}");
+                } else {
+                    assert!(matches!(result, Err(Error::Cancelled)), "{result:?}");
+                }
+                assert_eq!(
+                    *control.status.lock().unwrap(),
+                    Some(HighsModelStatus::ReachedInterrupt),
+                    "{algorithm} must stop inside HiGHS"
+                );
+            }
+        }
+    }
+
     #[test]
     fn status_mapping_preserves_limits_and_failures() {
         for (input, expected) in [

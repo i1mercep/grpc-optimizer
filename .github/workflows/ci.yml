@@ -26,6 +26,7 @@ jobs:
           python -m pip install -r clients/python/requirements.txt
           mkdir -p clients/python/generated
           python -m grpc_tools.protoc -I proto --python_out=clients/python/generated --grpc_python_out=clients/python/generated proto/optimization/v1/optimizer.proto
+          python -m unittest discover -s clients/python -p 'test_*.py'
           cargo build --locked --bin grpc-optimizer-server --bin grpc-optimizer-client
           OPT_CPU_BUDGET=2 OPT_STREAM_WINDOW=2 target/debug/grpc-optimizer-server > /tmp/grpc-optimizer-server.log 2>&1 &
           server_pid=$!

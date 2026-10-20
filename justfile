@@ -53,8 +53,13 @@ python-setup:
 python-client *args:
     .venv/bin/python clients/python/client.py "$@"
 
-# Check Python interoperability against a running server (requires python-setup).
+# Build a Pyomo model and solve it over gRPC (requires python-setup).
+python-pyomo-client *args:
+    .venv/bin/python clients/python/pyomo_client.py "$@"
+
+# Test Pyomo conversion and Python interoperability (requires a running server).
 python-test:
+    .venv/bin/python -m unittest discover -s clients/python -p 'test_*.py'
     .venv/bin/python clients/python/smoke_test.py
 
 # Build the local container image; optionally pass Docker build options.

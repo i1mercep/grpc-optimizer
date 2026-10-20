@@ -62,6 +62,7 @@ impl Service {
         let worker_terminal = terminal.clone();
 
         tokio::spawn(async move {
+            let _cancel_on_exit = worker_cancel.clone().drop_guard();
             // A permit follows each job through execution and the output channel. It
             // is released only when the consumer polls the result (or disconnects).
             let jobs = stream::unfold(
@@ -128,7 +129,6 @@ impl Service {
                     sent = tx.send(item) => { if sent.is_err() || terminal { break; } }
                 }
             }
-            worker_cancel.cancel();
         });
         ResponseStream {
             rx,
@@ -310,6 +310,9 @@ pub fn deadline<T>(request: &Request<T>) -> Result<Option<Instant>, Status> {
         Instant::now().checked_add(duration).ok_or_else(invalid)?,
     ))
 }
+
+#[cfg(test)]
+mod cancellation_tests;
 
 #[cfg(test)]
 mod tests {

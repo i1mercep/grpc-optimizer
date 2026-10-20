@@ -55,6 +55,7 @@ without requiring an extra `--` before the application options.
 | `just check` | Run lint and Rust tests |
 | `just python-setup` | Create/update `.venv`, install dependencies, and generate stubs |
 | `just python-client --help` / `just python-test` | Python client / interoperability checks |
+| `just python-pyomo-client --help` | Build a Pyomo model, convert it, and solve over gRPC |
 | `just docker-build` / `just docker-run` / `just docker-stop` | Build, run, and stop the container |
 
 Python clients and interoperability checks require `just python-setup` first.
@@ -77,6 +78,46 @@ Both clients reuse their channels across jobs.
 Set `PYTHON` to choose the interpreter for setup, for example
 `PYTHON=python3.12 just python-setup`. Repeat setup after changing the protobuf
 contract or Python dependencies.
+
+### Pyomo example
+
+Create a model using Pyomo expressions and send it to the existing gRPC API:
+
+```sh
+just python-setup
+just run                      # keep running in a separate terminal
+just python-pyomo-client
+# Remote server: just python-pyomo-client --endpoint server:50051 --deadline 30
+```
+
+The [example](clients/python/pyomo_client.py) builds a production model that
+maximizes `40*x + 30*y`, with `x+y <= 100`, `2*x+y <= 160`, and nonnegative
+variables. It prints optimal status, `x = 60`, `y = 40`, and objective `3600`.
+The endpoint also defaults to `OPT_GRPC_TARGET`, as in the other Python client.
+
+Reuse [the converter](clients/python/pyomo_adapter.py) with your own constructed
+Pyomo model:
+
+```python
+request, variables = to_solve_request(model, request_id="my-model")
+result = await stub.Solve(request, timeout=30)
+if result.HasField("solution"):
+    for var, value in zip(variables, result.solution.variable_values, strict=True):
+        var.set_value(value)
+```
+
+Import `to_solve_request` from `pyomo_adapter` when running from `clients/python`;
+`stub` is the generated `OptimizerStub`, as shown in the example. The converter
+supports continuous linear models with exactly one active objective, fixed
+variables, indexed components, and equality/ranged constraints. Integer, binary,
+nonlinear, and unsupported modeling components raise `ValueError`.
+Fixed variables are substituted, and at least one unfixed variable is required.
+Objective constants remain in Pyomo because the wire format has no objective
+offset: evaluate your original objective with `pyo.value(...)` after loading the
+solution. The server's objective value excludes that constant.
+
+`just python-test` runs converter unit tests before the interoperability checks,
+including the Pyomo example. The server and protobuf contract are unchanged.
 
 ## Contract and call patterns
 
@@ -160,11 +201,20 @@ Tune them and the concurrency to the memory available to each instance.
 
 The default solver budget is 30 seconds, with an absolute server maximum of 300.
 Clients may request a positive `time_limit_seconds`, clamped to that maximum and
-the remaining RPC deadline after construction. Validation and construction check
-cancellation before starting native solve. Once HiGHS is running, disconnecting
-cannot abort `spawn_blocking`: its execution permit remains held until it returns.
-HiGHS time limits are best effort, not a hard execution cutoff. Shutdown marks
-health not-serving, stops admissions/stream input, and drains running native work.
+the remaining RPC deadline after construction. Cancellation is checked before
+native solve and after result extraction. During simplex and interior-point
+solving, native interrupt callbacks check for client disconnects and expired RPC
+deadlines in all four call patterns. Stream termination also cancels its unfinished
+jobs. A solver budget still produces `TIME_LIMIT`; RPC cancellation and deadlines
+remain transport errors rather than successful solve responses.
+
+Interruption is cooperative: presolve, factorization, and other native work between
+callbacks may delay it. Neither callbacks nor HiGHS time limits provide a hard
+execution cutoff. Each execution permit remains held until the blocking worker
+finishes native cleanup, including after its async caller disappears. Shutdown
+marks health not-serving, stops admissions/stream input, and drains admitted native
+work; jobs in terminated streams receive cancellation, while active unary solves
+can finish normally.
 
 ## Example models
 
@@ -268,4 +318,7 @@ To select Rust tests, use e.g. `just test --test models` or
 Tests cover known optima, feasibility/objective/dual checks, seeded generation,
 input validation, native limits, all RPC patterns on loopback HTTP/2, per-job
 errors, backpressure, deadlines, finite limits, and cancellation/shutdown lifecycle.
+Native tests synchronize with simplex/IPM callbacks before cancelling or expiring
+a solve. Loopback tests verify disconnects and deadlines in all four RPC patterns,
+permit retention until native exit, and recovery of solver capacity.
 CI runs formatting, Clippy, Rust tests, and Python interoperability.
