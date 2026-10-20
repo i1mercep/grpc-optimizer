@@ -49,9 +49,7 @@ async def main() -> None:
                     if result.status == pb.SOLVE_STATUS_INFEASIBLE:
                         assert not result.HasField("solution"), result
         for mode in MODES[1:]:
-            _, jobs = load_jobs(
-                ROOT / "examples/models/production.json", 2, invalid_first=True
-            )
+            _, jobs = load_jobs(ROOT / "examples/models/production.json", 2, invalid_first=True)
             received = [o async for o in outcomes(stub, mode, jobs, 10)]
             assert any(o.HasField("error") and o.error.code == 3 for o in received)
             assert any(o.HasField("result") for o in received)

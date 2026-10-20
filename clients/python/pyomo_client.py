@@ -42,9 +42,7 @@ async def run(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--endpoint", default=os.environ.get("OPT_GRPC_TARGET", "127.0.0.1:50051")
-    )
+    parser.add_argument("--endpoint", default=os.environ.get("OPT_GRPC_TARGET", "127.0.0.1:50051"))
     parser.add_argument("--deadline", type=float, default=30)
     args = parser.parse_args()
     if not 0 < args.deadline <= 86400:

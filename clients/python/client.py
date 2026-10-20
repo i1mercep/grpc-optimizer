@@ -50,9 +50,7 @@ async def outcomes(
             result = await stub.Solve(job, timeout=rpc_timeout)
             yield pb.JobOutcome(request_id=result.request_id, result=result)
     elif mode == "server-stream":
-        async for outcome in stub.SolveBatch(
-            pb.BatchRequest(jobs=jobs), timeout=rpc_timeout
-        ):
+        async for outcome in stub.SolveBatch(pb.BatchRequest(jobs=jobs), timeout=rpc_timeout):
             yield outcome
     elif mode == "client-stream":
 
@@ -105,21 +103,16 @@ async def run(args: argparse.Namespace) -> None:
             )
             if outcome.HasField("error"):
                 print(
-                    f"job {outcome.request_id}: code {outcome.error.code}: "
-                    f"{outcome.error.message}",
+                    f"job {outcome.request_id}: code {outcome.error.code}: {outcome.error.message}",
                     file=sys.stderr,
                 )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--endpoint", default=os.environ.get("OPT_GRPC_TARGET", "127.0.0.1:50051")
-    )
+    parser.add_argument("--endpoint", default=os.environ.get("OPT_GRPC_TARGET", "127.0.0.1:50051"))
     parser.add_argument("--mode", choices=MODES, default="unary")
-    parser.add_argument(
-        "--fixture", type=Path, default=ROOT / "examples/models/production.json"
-    )
+    parser.add_argument("--fixture", type=Path, default=ROOT / "examples/models/production.json")
     parser.add_argument("--jobs", type=int, default=3)
     parser.add_argument("--deadline", type=float, default=30)
     parser.add_argument("--diagnostics", action="store_true")
