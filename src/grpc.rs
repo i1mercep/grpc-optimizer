@@ -1,3 +1,5 @@
+//! gRPC handlers with bounded streaming, per-job errors, and RPC-wide deadlines.
+
 use std::{
     pin::Pin,
     sync::{Arc, Mutex},
@@ -23,16 +25,19 @@ use crate::{
     },
 };
 
+/// Serves all four RPC modes using one engine's shared resource limits.
 #[derive(Clone)]
 pub struct Service {
     engine: Engine,
 }
 
 impl Service {
+    /// Wraps an engine, sharing its admission limits with existing clones.
     pub fn new(engine: Engine) -> Self {
         Self { engine }
     }
 
+    /// Builds the Tonic service with configured message limits in both directions.
     pub fn into_server(self) -> OptimizerServer<Self> {
         let limit = self.engine.config.max_message_bytes;
         OptimizerServer::new(self)
@@ -40,6 +45,10 @@ impl Service {
             .max_encoding_message_size(limit)
     }
 
+    /// Runs jobs in completion order with a window covering active and unread results.
+    ///
+    /// `finite` enforces the batch job cap for `SolveBatch` and `Collect`. Job failures
+    /// become outcomes; input, shutdown, and deadline failures terminate the stream.
     fn start_stream(
         &self,
         input: BoxStream<'static, Result<SolveRequest, Status>>,
@@ -140,12 +149,15 @@ impl Service {
     }
 }
 
+/// Carries a job's input position and retains its window slot until consumption.
 struct Delivery {
     index: usize,
     outcome: JobOutcome,
     _permit: OwnedSemaphorePermit,
 }
 
+/// Holds RPC admission until dropped and cancels unfinished jobs on drop.
+/// Queued outcomes are delivered before a stored terminal status.
 pub struct ResponseStream {
     rx: mpsc::Receiver<Result<Delivery, Status>>,
     _rpc_permit: OwnedSemaphorePermit,
@@ -170,6 +182,7 @@ impl Optimizer for Service {
     type SolveBatchStream = ResponseStream;
     type SolveStreamStream = ResponseStream;
 
+    /// Returns a single result or a transport status for request/execution failure.
     async fn solve(&self, request: Request<SolveRequest>) -> Result<Response<SolveResult>, Status> {
         let _permit = self.engine.admit_rpc().map_err(to_status)?;
         let deadline = deadline(&request)?;
@@ -188,6 +201,7 @@ impl Optimizer for Service {
         }
     }
 
+    /// Streams a bounded batch in completion order, preserving errors per job.
     async fn solve_batch(
         &self,
         request: Request<BatchRequest>,
@@ -203,6 +217,7 @@ impl Optimizer for Service {
         ))
     }
 
+    /// Collects a finite input stream into one size-limited response in input order.
     async fn collect(
         &self,
         request: Request<tonic::Streaming<SolveRequest>>,
@@ -215,6 +230,7 @@ impl Optimizer for Service {
         while let Some(item) = stream.rx.recv().await {
             let delivery = item?;
             let size = delivery.outcome.encoded_len();
+            // Each repeated message adds a one-byte field tag and a varint length prefix.
             bytes =
                 bytes.saturating_add(1 + prost::encoding::encoded_len_varint(size as u64) + size);
             if bytes
@@ -245,6 +261,7 @@ impl Optimizer for Service {
         }))
     }
 
+    /// Processes a persistent input stream with backpressure and one shared deadline.
     async fn solve_stream(
         &self,
         request: Request<tonic::Streaming<SolveRequest>>,
@@ -260,6 +277,7 @@ impl Optimizer for Service {
     }
 }
 
+/// Maps service failures to transport codes, also used inside per-job error outcomes.
 pub fn to_status(error: Error) -> Status {
     let code = match &error {
         Error::Invalid(_) => Code::InvalidArgument,
@@ -272,6 +290,7 @@ pub fn to_status(error: Error) -> Status {
     Status::new(code, error.to_string())
 }
 
+/// Waits until the absolute deadline, or remains pending when no deadline was supplied.
 pub async fn wait_deadline(deadline: Option<Instant>) {
     match deadline {
         Some(d) => tokio::time::sleep_until(d.into()).await,
@@ -279,8 +298,10 @@ pub async fn wait_deadline(deadline: Option<Instant>) {
     }
 }
 
-// Tonic enforces this metadata at the transport layer too; retaining an absolute
-// deadline here lets each later job in a stream receive only the remaining budget.
+/// Parses `grpc-timeout` into one absolute deadline shared by every job in the RPC.
+///
+/// Missing metadata means no deadline; malformed or overflowing values are rejected.
+/// Tonic also enforces the timeout at the transport layer.
 pub fn deadline<T>(request: &Request<T>) -> Result<Option<Instant>, Status> {
     let Some(raw) = request.metadata().get("grpc-timeout") else {
         return Ok(None);

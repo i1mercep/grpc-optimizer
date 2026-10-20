@@ -1,3 +1,5 @@
+//! Shared admission control and tracked blocking workers for native LP solves.
+
 use std::{sync::Arc, time::Instant};
 
 use prost::Message;
@@ -11,6 +13,9 @@ use crate::{
     solver,
 };
 
+/// Coordinates RPC and native-worker capacity across all clones.
+///
+/// Capacity is acquired without queuing; a busy engine returns [`Error::Exhausted`].
 #[derive(Clone)]
 pub struct Engine {
     pub config: Arc<Config>,
@@ -23,6 +28,7 @@ pub struct Engine {
 }
 
 impl Engine {
+    /// Validates configuration and creates shared admission and worker tracking state.
     pub fn new(config: Config) -> anyhow::Result<Self> {
         config.validate()?;
         Ok(Self {
@@ -36,6 +42,9 @@ impl Engine {
         })
     }
 
+    /// Reserves an active RPC slot; retain the permit for the full response lifetime.
+    ///
+    /// Returns an error when RPC capacity is full or admission has closed.
     pub fn admit_rpc(&self) -> Result<OwnedSemaphorePermit> {
         if self.shutdown.is_cancelled() {
             return Err(Error::Unavailable);
@@ -46,6 +55,8 @@ impl Engine {
             .map_err(|_| Error::Exhausted("active RPC limit reached".into()))
     }
 
+    /// Closes admission and signals stream producers; active native solves keep running
+    /// unless their own cancellation token or deadline stops them.
     pub fn shutdown(&self) {
         self.shutdown.cancel();
         self.slots.close();
@@ -53,14 +64,23 @@ impl Engine {
         self.workers.close();
     }
 
+    /// Waits for tracked native workers and their cleanup to finish.
+    ///
+    /// Call [`Self::shutdown`] first to prevent new work from being admitted.
     pub async fn drain(&self) {
         self.workers.wait().await;
     }
 
+    /// Returns a clone of the shared signal used to stop stream producers on shutdown.
     pub fn shutdown_token(&self) -> CancellationToken {
         self.shutdown.clone()
     }
 
+    /// Validates request size and runs a solve within the shared native-worker limit.
+    ///
+    /// Dropping this future cancels only this job. Native interruption is cooperative,
+    /// so its worker retains capacity through solver exit and callback cleanup.
+    /// An expired deadline or cancelled token returns the corresponding [`Error`].
     pub async fn solve(
         &self,
         request: SolveRequest,
@@ -94,6 +114,7 @@ impl Engine {
         .await
     }
 
+    /// Admits and tracks work whose permit must outlive an abandoned async caller.
     async fn run_blocking<T: Send + 'static>(
         &self,
         work: impl FnOnce() -> Result<T> + Send + 'static,

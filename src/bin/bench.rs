@@ -1,3 +1,5 @@
+//! Compares direct and gRPC execution, including failed jobs in benchmark accounting.
+
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -57,6 +59,7 @@ struct Args {
     deadline_seconds: u64,
 }
 
+/// Client-observed latency plus optional server timings for one submitted job.
 #[derive(Serialize)]
 struct Measurement {
     latency_ms: f64,
@@ -69,6 +72,7 @@ struct Measurement {
 }
 
 impl Measurement {
+    /// Records elapsed time; only an optimal result containing a solution counts as success.
     fn result(start: Instant, result: Result<SolveResult, String>) -> Self {
         let mut measurement = Self {
             latency_ms: start.elapsed().as_secs_f64() * 1000.0,
@@ -115,6 +119,11 @@ fn timed<T>(value: T, seconds: u64) -> Request<T> {
     request
 }
 
+/// Measures one mode, retaining a measurement for every input even if an RPC fails.
+///
+/// Direct/unary latency starts at job execution; batch/collect latency starts at chunk
+/// submission; bidi latency starts after a window slot is acquired. `All` must be
+/// expanded by the caller, and every remote mode requires `client` to be present.
 async fn run(
     mode: Mode,
     input: Vec<SolveRequest>,
@@ -208,6 +217,7 @@ async fn run(
             measurements
         }
         Mode::Bidi => {
+            // Correlation retains each slot until its response arrives, bounding in-flight jobs.
             type Pending = Arc<Mutex<HashMap<String, (Instant, OwnedSemaphorePermit)>>>;
             let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
             let producer_pending = pending.clone();
@@ -271,6 +281,7 @@ async fn run(
     }
 }
 
+/// Reports nearest-rank p50/p95/p99 values, or JSON null for an empty sample.
 fn distribution(values: impl Iterator<Item = f64>) -> serde_json::Value {
     let mut values: Vec<_> = values.collect();
     values.sort_by(f64::total_cmp);

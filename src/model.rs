@@ -1,3 +1,5 @@
+//! Structural and resource validation before a wire model reaches HiGHS.
+
 use std::collections::HashSet;
 
 use crate::{
@@ -5,6 +7,7 @@ use crate::{
     pb::{ObjectiveSense, SolveRequest},
 };
 
+/// Request and execution failures; mathematical solve outcomes are returned in `SolveResult`.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("{0}")]
@@ -23,6 +26,11 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Checks sparse row indices, finite coefficients, bounds, and configured model limits.
+///
+/// Omitted bounds are unbounded. Duplicate indices within a row are rejected rather
+/// than combined. Returns [`Error::Invalid`] for malformed input or [`Error::Exhausted`]
+/// for resource limits; feasibility and boundedness are left to the solver.
 pub fn validate(request: &SolveRequest, config: &Config) -> Result<()> {
     let invalid = |message: &str| Error::Invalid(message.to_owned());
     if request.request_id.is_empty() || request.request_id.len() > 128 {
@@ -93,6 +101,7 @@ pub fn validate(request: &SolveRequest, config: &Config) -> Result<()> {
     Ok(())
 }
 
+/// Validates inclusive finite bounds, using `None` for either unbounded side.
 fn bounds(lower: Option<f64>, upper: Option<f64>) -> Result<()> {
     if lower.is_some_and(|x| !x.is_finite()) || upper.is_some_and(|x| !x.is_finite()) {
         return Err(Error::Invalid(

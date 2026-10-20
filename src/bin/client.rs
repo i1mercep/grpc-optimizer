@@ -1,3 +1,5 @@
+//! Example client for all RPC modes, fixture export, and service health checks.
+
 use std::{path::PathBuf, time::Duration};
 
 use clap::{Parser, ValueEnum};

@@ -1,3 +1,5 @@
+//! Sparse-model conversion, native solve budgets, and solution extraction.
+
 use std::{ops::Bound, time::Instant};
 
 use highs::{HighsModelStatus, HighsSolutionStatus, RowProblem, Sense};
@@ -14,7 +16,12 @@ mod interrupt;
 #[cfg(test)]
 pub(crate) use interrupt::TestControl;
 
-/// Synchronous entry point. Call only from a blocking worker (or the direct benchmark).
+/// Validates and solves one continuous LP on the calling thread.
+///
+/// Requires validated configuration and a blocking worker; this entry point does not
+/// enforce concurrency limits. The solver budget is capped by configuration and the
+/// remaining deadline. Cancellation and deadline expiry return errors; reaching only
+/// the solver time limit returns a `TimeLimit` result, possibly with a feasible solution.
 pub fn solve(
     request: SolveRequest,
     config: &Config,
@@ -31,6 +38,8 @@ pub fn solve(
     )
 }
 
+/// Runs validation, model construction, solving, and extraction with separate timings.
+/// Only a feasible primal solution is returned; duals also require dual feasibility.
 pub(crate) fn solve_inner(
     request: SolveRequest,
     config: &Config,
@@ -160,6 +169,7 @@ fn range(lower: Option<f64>, upper: Option<f64>) -> (Bound<f64>, Bound<f64>) {
     )
 }
 
+/// Checks the RPC budget between native phases, giving cancellation precedence over expiry.
 pub(crate) fn check_budget(deadline: Option<Instant>, cancel: &CancellationToken) -> Result<()> {
     if cancel.is_cancelled() {
         return Err(Error::Cancelled);
@@ -170,6 +180,7 @@ pub(crate) fn check_budget(deadline: Option<Instant>, cancel: &CancellationToken
     Ok(())
 }
 
+/// Preserves mathematical outcomes and limits, but turns native failures into service errors.
 fn status(status: HighsModelStatus) -> Result<SolveStatus> {
     use HighsModelStatus as H;
     Ok(match status {

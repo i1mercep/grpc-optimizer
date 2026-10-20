@@ -1,3 +1,5 @@
+//! Cooperative interruption through HiGHS callbacks absent from the safe wrapper API.
+//!
 //! The native model owns the callback registration; its state must outlive it.
 
 use std::{
@@ -17,6 +19,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::model::{Error, Result};
 
+/// State kept at a stable address while HiGHS can invoke the callback.
 struct Callback {
     cancel: CancellationToken,
     deadline: Option<Instant>,
@@ -25,6 +28,7 @@ struct Callback {
     test_control: Option<std::sync::Arc<TestControl>>,
 }
 
+/// Keeps callback state alive through solution reads and native model destruction.
 pub(super) struct Solved {
     // Fields drop in declaration order: destroy HiGHS (and its registration)
     // before freeing the callback state. Do not expose ownership of `native`.
@@ -40,6 +44,8 @@ impl Deref for Solved {
     }
 }
 
+/// Registers simplex/IPM interruption and solves while preserving callback lifetimes.
+/// Work between callbacks may delay cancellation; budget checks also run around the solve.
 pub(super) fn solve(
     native: Model,
     cancel: &CancellationToken,
@@ -111,6 +117,11 @@ fn check_status(status: highs_sys::HighsInt, operation: &str) -> Result<()> {
     }
 }
 
+/// Requests interruption on cancellation, expiry, or panic without unwinding into C.
+///
+/// # Safety
+/// Non-null `user_data` must point to a live [`Callback`]. Non-null `input` must be
+/// writable HiGHS callback input for this invocation. Null pointers are ignored.
 unsafe extern "C" fn interrupt(
     _kind: c_int,
     _message: *const c_char,
@@ -155,6 +166,7 @@ pub(crate) struct TestControl {
 
 #[cfg(test)]
 impl TestControl {
+    /// Creates a gate, a first-callback notification, and a sender that releases the gate.
     pub fn new(
         request_id: &str,
         solver: &'static str,
@@ -179,6 +191,7 @@ impl TestControl {
         )
     }
 
+    /// Disables presolve and selects an algorithm so tests reach its interrupt callback.
     fn configure(&self, native: &mut Model, cancel: &CancellationToken) -> Result<()> {
         *self.cancel.lock().unwrap() = Some(cancel.clone());
         native
@@ -190,6 +203,7 @@ impl TestControl {
         Ok(())
     }
 
+    /// Pauses only the first callback so a test can cancel or expire an active solve.
     fn on_callback(&self) {
         let started = self.started.lock().unwrap().take();
         if let Some(started) = started {

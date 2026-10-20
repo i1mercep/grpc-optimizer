@@ -1,5 +1,10 @@
+//! Server resource limits and validated environment configuration.
+
 use std::{net::SocketAddr, str::FromStr};
 
+/// Process-wide limits shared by RPC admission, model validation, and native solves.
+///
+/// Call [`Self::validate`] after constructing or modifying configuration directly.
 #[derive(Clone, Debug)]
 pub struct Config {
     pub listen_addr: SocketAddr,
@@ -41,6 +46,10 @@ impl Default for Config {
 }
 
 impl Config {
+    /// Loads `OPT_*` overrides and validates the resulting limits.
+    ///
+    /// Unless overridden, solve concurrency is the CPU budget divided by solver threads.
+    /// Returns an error for malformed values or inconsistent resource limits.
     pub fn from_env() -> anyhow::Result<Self> {
         let mut c = Self::default();
         macro_rules! read {
@@ -67,6 +76,7 @@ impl Config {
         Ok(c)
     }
 
+    /// Rejects nonpositive or oversized limits, CPU oversubscription, and invalid time budgets.
     pub fn validate(&self) -> anyhow::Result<()> {
         for (name, value) in [
             ("CPU budget", self.cpu_budget),

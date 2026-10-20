@@ -1,3 +1,5 @@
+//! Serves optimization, health, and reflection; drains native workers on shutdown.
+
 use grpc_optimizer::{
     config::Config,
     engine::Engine,
@@ -43,6 +45,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Waits for Ctrl-C or, on Unix, SIGTERM before starting graceful shutdown.
 async fn shutdown_signal() {
     #[cfg(unix)]
     {

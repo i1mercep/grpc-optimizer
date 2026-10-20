@@ -1,7 +1,10 @@
+//! Embedded reference fixtures and seeded feasible models for clients and benchmarks.
+
 use serde::{Deserialize, Serialize};
 
 use crate::pb::{Constraint, LinearProgram, ObjectiveSense, SolveRequest, Variable};
 
+/// A portable JSON fixture with optional expected solution values for verification.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Sample {
     pub name: String,
@@ -12,6 +15,7 @@ pub struct Sample {
     pub expected_values: Option<Vec<f64>>,
 }
 
+/// Loads the bundled optimal, infeasible, and unbounded reference models.
 pub fn fixtures() -> Vec<Sample> {
     [
         include_str!("../examples/models/production.json"),
@@ -25,6 +29,7 @@ pub fn fixtures() -> Vec<Sample> {
     .collect()
 }
 
+/// Finds a bundled model by name, returning an error for an unknown name.
 pub fn fixture(name: &str) -> anyhow::Result<Sample> {
     fixtures()
         .into_iter()
@@ -32,13 +37,17 @@ pub fn fixture(name: &str) -> anyhow::Result<Sample> {
         .ok_or_else(|| anyhow::anyhow!("unknown model {name}"))
 }
 
+/// Model families supported by the deterministic benchmark generator.
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
 pub enum Family {
     Production,
     Transportation,
 }
 
-/// Deterministic, feasible LPs. Size is products or the number of sources/destinations.
+/// Generates a reproducible feasible LP for a fixed family, size, and seed.
+///
+/// `size` counts products or both sources and destinations (`size²` routes).
+/// Returns an error for zero size or more than 100,000 variables.
 pub fn generate(family: Family, size: usize, seed: u64) -> anyhow::Result<SolveRequest> {
     anyhow::ensure!(size > 0, "size must be positive");
     let mut rng = Generator(seed);
@@ -62,6 +71,7 @@ pub fn generate(family: Family, size: usize, seed: u64) -> anyhow::Result<SolveR
                     upper: None,
                 })
                 .collect();
+            // Equal supply and demand make a diagonal flow of 10 per route feasible.
             for source in 0..size {
                 model.constraints.push(Constraint {
                     indices: (0..size).map(|d| (source * size + d) as u32).collect(),
@@ -112,9 +122,10 @@ pub fn generate(family: Family, size: usize, seed: u64) -> anyhow::Result<SolveR
     })
 }
 
-// SplitMix64: reproducible across platforms and dependency upgrades.
+/// SplitMix64 state, keeping generated models stable across dependency upgrades.
 struct Generator(u64);
 impl Generator {
+    /// Advances the generator and returns a value in `0..upper`; `upper` must be positive.
     fn integer(&mut self, upper: u64) -> u64 {
         self.0 = self.0.wrapping_add(0x9e3779b97f4a7c15);
         let mut z = self.0;

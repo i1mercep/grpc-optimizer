@@ -1,3 +1,5 @@
+//! Generates serde-enabled wire types and a descriptor set for gRPC reflection.
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=proto/optimization/v1/optimizer.proto");
     tonic_prost_build::configure()
