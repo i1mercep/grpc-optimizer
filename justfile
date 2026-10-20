@@ -1,7 +1,6 @@
 set dotenv-load
 set positional-arguments
 
-python := env("PYTHON", "python3")
 image := env("OPT_DOCKER_IMAGE", "grpc-optimizer")
 container := env("OPT_DOCKER_CONTAINER", "grpc-optimizer")
 publish := env("OPT_DOCKER_PUBLISH", "127.0.0.1:50051:50051")
@@ -42,25 +41,41 @@ test *args:
 # Run all local Rust checks.
 check: lint test
 
-# Create/update the Python environment and generate gRPC stubs.
+# Sync the locked Python 3.14 environment and generate gRPC/type stubs.
 python-setup:
-    {{ quote(python) }} -m venv .venv
-    .venv/bin/python -m pip install -r clients/python/requirements.txt
+    uv sync --locked
     mkdir -p clients/python/generated
-    .venv/bin/python -m grpc_tools.protoc -I proto --python_out=clients/python/generated --grpc_python_out=clients/python/generated proto/optimization/v1/optimizer.proto
+    uv run --locked python -m grpc_tools.protoc -I proto --python_out=clients/python/generated --pyi_out=clients/python/generated --grpc_python_out=clients/python/generated proto/optimization/v1/optimizer.proto
 
 # Run the Python client (requires python-setup).
 python-client *args:
-    .venv/bin/python clients/python/client.py "$@"
+    uv run --locked python clients/python/client.py "$@"
 
 # Build a Pyomo model and solve it over gRPC (requires python-setup).
 python-pyomo-client *args:
-    .venv/bin/python clients/python/pyomo_client.py "$@"
+    uv run --locked python clients/python/pyomo_client.py "$@"
+
+# Format Python clients and fix lint issues.
+python-fmt:
+    uv run --locked ruff check --fix clients/python
+    uv run --locked ruff format clients/python
+
+# Check Python formatting, lint, and types (requires python-setup).
+python-lint:
+    uv run --locked ruff format --check clients/python
+    uv run --locked ruff check clients/python
+    uv run --locked pyrefly check
+
+# Run Python converter tests without a server (requires python-setup).
+python-unit:
+    uv run --locked python -m unittest discover -s clients/python -p 'test_*.py'
+
+# Run Python static checks and converter tests without a server.
+python-check: python-lint python-unit
 
 # Test Pyomo conversion and Python interoperability (requires a running server).
-python-test:
-    .venv/bin/python -m unittest discover -s clients/python -p 'test_*.py'
-    .venv/bin/python clients/python/smoke_test.py
+python-test: python-unit
+    uv run --locked python clients/python/smoke_test.py
 
 # Build the local container image; optionally pass Docker build options.
 docker-build *args:

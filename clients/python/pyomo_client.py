@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import os
 import sys
+from typing import Any
 
 import pyomo.environ as pyo
 
@@ -11,22 +12,23 @@ from client import grpc, pb, rpc
 from pyomo_adapter import to_solve_request
 
 
-def build_model():
+def build_model() -> Any:
     model = pyo.ConcreteModel()
     model.x = pyo.Var(domain=pyo.NonNegativeReals)
     model.y = pyo.Var(domain=pyo.NonNegativeReals)
-    model.profit = pyo.Objective(expr=40 * model.x + 30 * model.y,
-                               sense=pyo.maximize)
+    model.profit = pyo.Objective(expr=40 * model.x + 30 * model.y, sense=pyo.maximize)
     model.machine = pyo.Constraint(expr=model.x + model.y <= 100)
     model.material = pyo.Constraint(expr=2 * model.x + model.y <= 160)
     return model
 
 
-async def run(args):
+async def run(args: argparse.Namespace) -> None:
     model = build_model()
     request, variables = to_solve_request(model, request_id="pyomo-production")
-    options = [("grpc.max_receive_message_length", 16 * 1024 * 1024),
-               ("grpc.max_send_message_length", 16 * 1024 * 1024)]
+    options = [
+        ("grpc.max_receive_message_length", 16 * 1024 * 1024),
+        ("grpc.max_send_message_length", 16 * 1024 * 1024),
+    ]
     async with grpc.aio.insecure_channel(args.endpoint, options=options) as channel:
         await asyncio.wait_for(channel.channel_ready(), timeout=5)
         result = await rpc.OptimizerStub(channel).Solve(request, timeout=args.deadline)
@@ -38,10 +40,11 @@ async def run(args):
         print(f"Objective: {pyo.value(model.profit):g}")
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--endpoint", default=os.environ.get("OPT_GRPC_TARGET",
-                                                            "127.0.0.1:50051"))
+    parser.add_argument(
+        "--endpoint", default=os.environ.get("OPT_GRPC_TARGET", "127.0.0.1:50051")
+    )
     parser.add_argument("--deadline", type=float, default=30)
     args = parser.parse_args()
     if not 0 < args.deadline <= 86400:

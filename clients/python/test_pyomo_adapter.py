@@ -16,8 +16,10 @@ class PyomoAdapterTests(unittest.TestCase):
         return model
 
     def test_objective_sense_and_unbounded_variable(self):
-        for sense, expected in ((pyo.minimize, pb.OBJECTIVE_SENSE_MINIMIZE),
-                                (pyo.maximize, pb.OBJECTIVE_SENSE_MAXIMIZE)):
+        for sense, expected in (
+            (pyo.minimize, pb.OBJECTIVE_SENSE_MINIMIZE),
+            (pyo.maximize, pb.OBJECTIVE_SENSE_MAXIMIZE),
+        ):
             with self.subTest(sense=sense):
                 model = self.model()
                 model.objective.sense = sense
@@ -69,7 +71,9 @@ class PyomoAdapterTests(unittest.TestCase):
         model.x = pyo.Var([0, 1], initialize=2)
         model.x[0].fix()
         model.objective = pyo.Objective(expr=3 * model.x[0] + 4 * model.x[1] + 7)
-        model.row = pyo.Constraint(expr=pyo.inequality(1, model.x[0] + 2*model.x[1] + 5, 13))
+        model.row = pyo.Constraint(
+            expr=pyo.inequality(1, model.x[0] + 2 * model.x[1] + 5, 13)
+        )
         request, variables = to_solve_request(model)
         self.assertEqual([v.name for v in variables], ["x[1]"])
         self.assertEqual(request.model.variables[0].objective, 4)
@@ -100,7 +104,9 @@ class PyomoAdapterTests(unittest.TestCase):
             request, variables = to_solve_request(model)
             self.assertEqual([v.name for v in variables], ["x", "b[1].y"])
             self.assertEqual(len(request.model.constraints), 1)
-            self.assertEqual(list(request.model.constraints[0].coefficients), [1, coefficient])
+            self.assertEqual(
+                list(request.model.constraints[0].coefficients), [1, coefficient]
+            )
 
     def test_constant_constraint_preserves_infeasibility(self):
         model = self.model()
@@ -154,7 +160,9 @@ class PyomoAdapterTests(unittest.TestCase):
                     model.unsupported = component(rule=lambda m: [m.x], sos=1)
                 else:
                     model.unsupported = component()
-                with self.assertRaisesRegex(ValueError, "unsupported component unsupported"):
+                with self.assertRaisesRegex(
+                    ValueError, "unsupported component unsupported"
+                ):
                     to_solve_request(model)
 
     def test_rejects_invalid_bounds_and_fixed_values(self):
@@ -185,9 +193,11 @@ class PyomoAdapterTests(unittest.TestCase):
     def test_request_id_uses_utf8_byte_limit(self):
         model = self.model()
         for request_id in ("", "é" * 65):
-            with self.subTest(request_id=request_id):
-                with self.assertRaisesRegex(ValueError, "1..128 UTF-8 bytes"):
-                    to_solve_request(model, request_id)
+            with (
+                self.subTest(request_id=request_id),
+                self.assertRaisesRegex(ValueError, "1..128 UTF-8 bytes"),
+            ):
+                to_solve_request(model, request_id)
 
     def test_requires_constructed_model(self):
         with self.assertRaisesRegex(ValueError, "constructed Pyomo model"):

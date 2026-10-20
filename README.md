@@ -57,8 +57,10 @@ including every message in a stream. Run `just client --help` for all options.
 
 ## Python client and Pyomo
 
-With Python and its `venv` module installed, run setup once to install dependencies
-and generate protobuf stubs. Keep the server running in another terminal.
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then run
+setup to create a Python 3.14 environment, install locked dependencies, and generate
+protobuf and type stubs. uv downloads Python 3.14 if needed. Keep the server
+running in another terminal.
 
 ```sh
 just python-setup
@@ -71,8 +73,16 @@ The Python client supports the same four modes as Rust. Both clients reuse a
 channel across jobs and send and receive concurrently in bidirectional mode.
 They close the input stream after submission and read all remaining results.
 
-To choose a setup interpreter, use `PYTHON=python3.12 just python-setup`.
-Repeat setup after changing the protobuf contract or Python dependencies.
+Python 3.14 is selected by `.python-version` and required by `pyproject.toml`.
+Dependencies and development tools are recorded in `uv.lock`; setup and client
+commands use `--locked` to prevent unexpected dependency changes. After editing
+dependencies, run `uv lock`, then repeat setup. Repeat setup after changing the
+protobuf contract as well.
+
+Run `just python-fmt` to format and fix lint issues with Ruff, and
+`just python-check` to check formatting, lint, and types with Ruff and Pyrefly,
+then run converter tests without a server. Generated stubs are excluded from
+formatting and linting; Pyrefly uses their types when checking the client code.
 
 ### Solve a Pyomo model
 
@@ -186,8 +196,10 @@ Cargo's lockfile. Pass client, benchmark, and test arguments directly to Just:
 | `just fmt` | Format Rust source |
 | `just lint` / `just test` | Check formatting and Clippy / run Rust tests |
 | `just check` | Run lint and Rust tests |
-| `just python-setup` | Install Python dependencies and generate stubs |
+| `just python-setup` | Sync the locked Python 3.14 environment and generate stubs |
 | `just python-client --help` / `just python-pyomo-client --help` | Show Python client options |
+| `just python-fmt` / `just python-lint` | Format/fix with Ruff / check Ruff and Pyrefly |
+| `just python-unit` / `just python-check` | Run converter tests / static checks and converter tests |
 | `just python-test` | Run Pyomo converter tests and Python interoperability checks |
 | `just docker-build` / `just docker-run` / `just docker-stop` | Build, run, and stop the container |
 
@@ -196,13 +208,17 @@ To verify changes:
 ```sh
 just check
 just build
+just python-setup
+just python-check
 just python-test
 ```
 
-Python checks require `just python-setup` and a running server. Select Rust tests
-with `just test --test models` or `just test --test grpc -- --nocapture`.
-CI runs formatting, Clippy, Rust tests, and Python interoperability, including
-the Pyomo example. Tests cover known optima, diagnostics, validation, all RPC
-modes, limits, backpressure, deadlines, cancellation, and shutdown.
+Python checks require `just python-setup`; `just python-test` also needs a running
+server. Select Rust tests with `just test --test models` or
+`just test --test grpc -- --nocapture`.
+CI runs formatting, Clippy, Rust tests, Ruff, Pyrefly, and Python 3.14
+interoperability, including the Pyomo example. Tests cover known optima,
+diagnostics, validation, all RPC modes, limits, backpressure, deadlines,
+cancellation, and shutdown.
 
 For performance comparisons, see [benchmarking](docs/operations.md#benchmarking).
