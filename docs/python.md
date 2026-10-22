@@ -16,9 +16,9 @@ run `just python-build` and install the resulting wheel. Generated protobuf
 bindings ship inside the SDK; importing it needs no source checkout, `sys.path`
 changes, compiler, or stub generation.
 
-## Repeated solves and async applications
+## Many models and async applications
 
-Use a context manager to reuse a channel and close it reliably:
+Use a context manager to reuse a channel across different models:
 
 ```python
 from grpc_optimizer import PyomoClient
@@ -43,6 +43,43 @@ async with AsyncPyomoClient("server:50051") as client:
 Create and use each async client within the same event loop. Keep a submitted
 model unchanged until its solve completes. Independent models may share a client.
 The synchronous API blocks the calling thread; use the async API in async code.
+
+## Re-solve one model: GrpcOptimizer
+
+When only data changes between solves, pass the model to a `GrpcOptimizer` and
+call `solve()` in a loop. The model structure is sent once; each later solve
+sends only the objective coefficients, variable bounds, and constraint bounds
+that differ from the model at construction:
+
+```python
+from grpc_optimizer import GrpcOptimizer
+
+model.demand = pyo.Param(initialize=0, mutable=True)
+model.meet = pyo.Constraint(expr=model.x >= model.demand)
+
+with GrpcOptimizer(model, "server:50051") as optimizer:
+    for demand in (2, 5, 10):
+        model.demand = demand
+        result = optimizer.solve()  # values are loaded into model as usual
+```
+
+`AsyncGrpcOptimizer(model)` is the async counterpart, with
+`await optimizer.solve()`. Both accept `endpoint`, `channel`, and `timeout`;
+`solve()` accepts `time_limit`, `diagnostics`, `request_id`, and
+`load_solution`, with the same results as `solve`.
+
+- Change mutable `Param`s, variable bounds, constant terms, or objective
+  coefficients freely. Changing constraint coefficients, the objective sense, or
+  the set of active variables and constraints raises `ValueError` before
+  sending; create a new optimizer for the new structure.
+- Each solve still converts the whole model locally to find the changes; only
+  the network message shrinks.
+- `timeout` covers the optimizer's whole call; the default `None` keeps it open
+  until closed. Close optimizers (or use `with`) to release the server's call slot.
+- Solves on one optimizer run one at a time. Use several optimizers for parallel
+  solves.
+- A job the server rejects raises `JobError` (with `code` and `details`); the
+  optimizer stays open. RPC failures and cancelled async solves close it.
 
 ## Options and results
 
@@ -106,7 +143,8 @@ they create themselves. Supply either an endpoint or a channel.
 
 The public API is exported from `grpc_optimizer.__init__`. `adapter.py` converts
 Pyomo expressions into the existing sparse LP contract and captures variable
-order and objective offsets. `client.py` owns transport and channel lifecycle.
+order and objective offsets. `adapter.py` also encodes `GrpcOptimizer` changes.
+`client.py` owns transport, channel, and call lifecycle.
 `result.py` validates responses and applies solutions. The server and protobuf
 contract remain generic and independent of Pyomo.
 

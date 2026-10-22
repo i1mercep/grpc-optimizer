@@ -12,7 +12,7 @@ use tonic::{
 use crate::{
     config::Config,
     engine::Engine,
-    pb::{BatchRequest, SolveRequest, SolveStatus, optimizer_client::OptimizerClient},
+    pb::{SolveRequest, SolveStatus, optimizer_client::OptimizerClient},
     samples::{self, Family},
     solver::TestControl,
 };
@@ -22,13 +22,11 @@ use super::Service;
 #[derive(Clone, Copy, Debug)]
 enum Mode {
     Unary,
-    Batch,
-    Collect,
     Bidi,
 }
 
 impl Mode {
-    const ALL: [Self; 4] = [Self::Unary, Self::Batch, Self::Collect, Self::Bidi];
+    const ALL: [Self; 2] = [Self::Unary, Self::Bidi];
 }
 
 struct RunningServer {
@@ -132,18 +130,6 @@ async fn call(
         Mode::Unary => {
             client.solve(timed(job, deadline)).await?;
         }
-        Mode::Batch => {
-            let mut output = client
-                .solve_batch(timed(BatchRequest { jobs: vec![job] }, deadline))
-                .await?
-                .into_inner();
-            while output.message().await?.is_some() {}
-        }
-        Mode::Collect => {
-            client
-                .collect(timed(tokio_stream::iter([job]), deadline))
-                .await?;
-        }
         Mode::Bidi => {
             let mut output = client
                 .solve_stream(timed(tokio_stream::iter([job]), deadline))
@@ -216,52 +202,4 @@ async fn deadlines_interrupt_native_work_and_restore_capacity_in_every_rpc_patte
             "{mode:?}"
         );
     }
-}
-
-#[tokio::test]
-async fn collected_response_overflow_interrupts_other_running_jobs() {
-    let job = samples::generate(Family::Production, 100, 42).unwrap();
-    let (control, entered, release) = TestControl::new(&job.request_id, "simplex");
-    let server = RunningServer::with_config(
-        control.clone(),
-        Config {
-            cpu_budget: 2,
-            max_concurrent_solves: 2,
-            max_collect_bytes: 1,
-            ..Config::default()
-        },
-    )
-    .await;
-    let (tx, rx) = tokio::sync::mpsc::channel(2);
-    tx.send(job).await.unwrap();
-    let mut client = server.client.clone();
-    let task = tokio::spawn(async move {
-        client
-            .collect(tokio_stream::wrappers::ReceiverStream::new(rx))
-            .await
-    });
-    let token = tokio::time::timeout(Duration::from_secs(5), entered)
-        .await
-        .unwrap()
-        .unwrap();
-    // Only submit the overflowing result after the other job has entered HiGHS.
-    tx.send(healthy_job()).await.unwrap();
-    let error = tokio::time::timeout(Duration::from_secs(5), task)
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap_err();
-    assert_eq!(error.code(), Code::ResourceExhausted);
-    tokio::time::timeout(Duration::from_secs(5), token.cancelled())
-        .await
-        .unwrap();
-    release.send(()).unwrap();
-    server.engine.shutdown();
-    tokio::time::timeout(Duration::from_secs(5), server.engine.drain())
-        .await
-        .unwrap();
-    assert_eq!(
-        *control.status.lock().unwrap(),
-        Some(HighsModelStatus::ReachedInterrupt)
-    );
 }

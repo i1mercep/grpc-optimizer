@@ -39,19 +39,14 @@ class OptimizerStub:
                 request_serializer=optimization_dot_v1_dot_optimizer__pb2.SolveRequest.SerializeToString,
                 response_deserializer=optimization_dot_v1_dot_optimizer__pb2.SolveResult.FromString,
                 _registered_method=True)
-        self.SolveBatch = channel.unary_stream(
-                '/optimization.v1.Optimizer/SolveBatch',
-                request_serializer=optimization_dot_v1_dot_optimizer__pb2.BatchRequest.SerializeToString,
-                response_deserializer=optimization_dot_v1_dot_optimizer__pb2.JobOutcome.FromString,
-                _registered_method=True)
-        self.Collect = channel.stream_unary(
-                '/optimization.v1.Optimizer/Collect',
-                request_serializer=optimization_dot_v1_dot_optimizer__pb2.SolveRequest.SerializeToString,
-                response_deserializer=optimization_dot_v1_dot_optimizer__pb2.BatchResponse.FromString,
-                _registered_method=True)
         self.SolveStream = channel.stream_stream(
                 '/optimization.v1.Optimizer/SolveStream',
                 request_serializer=optimization_dot_v1_dot_optimizer__pb2.SolveRequest.SerializeToString,
+                response_deserializer=optimization_dot_v1_dot_optimizer__pb2.JobOutcome.FromString,
+                _registered_method=True)
+        self.SolveSession = channel.stream_stream(
+                '/optimization.v1.Optimizer/SolveSession',
+                request_serializer=optimization_dot_v1_dot_optimizer__pb2.SessionRequest.SerializeToString,
                 response_deserializer=optimization_dot_v1_dot_optimizer__pb2.JobOutcome.FromString,
                 _registered_method=True)
 
@@ -65,20 +60,15 @@ class OptimizerServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def SolveBatch(self, request, context):
-        """Missing associated documentation comment in .proto file."""
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def Collect(self, request_iterator, context):
-        """Missing associated documentation comment in .proto file."""
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
     def SolveStream(self, request_iterator, context):
         """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SolveSession(self, request_iterator, context):
+        """Sends the model once, then streams per-job input values; reconnect to change it.
+        """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -91,19 +81,14 @@ def add_OptimizerServicer_to_server(servicer, server):
                     request_deserializer=optimization_dot_v1_dot_optimizer__pb2.SolveRequest.FromString,
                     response_serializer=optimization_dot_v1_dot_optimizer__pb2.SolveResult.SerializeToString,
             ),
-            'SolveBatch': grpc.unary_stream_rpc_method_handler(
-                    servicer.SolveBatch,
-                    request_deserializer=optimization_dot_v1_dot_optimizer__pb2.BatchRequest.FromString,
-                    response_serializer=optimization_dot_v1_dot_optimizer__pb2.JobOutcome.SerializeToString,
-            ),
-            'Collect': grpc.stream_unary_rpc_method_handler(
-                    servicer.Collect,
-                    request_deserializer=optimization_dot_v1_dot_optimizer__pb2.SolveRequest.FromString,
-                    response_serializer=optimization_dot_v1_dot_optimizer__pb2.BatchResponse.SerializeToString,
-            ),
             'SolveStream': grpc.stream_stream_rpc_method_handler(
                     servicer.SolveStream,
                     request_deserializer=optimization_dot_v1_dot_optimizer__pb2.SolveRequest.FromString,
+                    response_serializer=optimization_dot_v1_dot_optimizer__pb2.JobOutcome.SerializeToString,
+            ),
+            'SolveSession': grpc.stream_stream_rpc_method_handler(
+                    servicer.SolveSession,
+                    request_deserializer=optimization_dot_v1_dot_optimizer__pb2.SessionRequest.FromString,
                     response_serializer=optimization_dot_v1_dot_optimizer__pb2.JobOutcome.SerializeToString,
             ),
     }
@@ -145,60 +130,6 @@ class Optimizer:
             _registered_method=True)
 
     @staticmethod
-    def SolveBatch(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_stream(
-            request,
-            target,
-            '/optimization.v1.Optimizer/SolveBatch',
-            optimization_dot_v1_dot_optimizer__pb2.BatchRequest.SerializeToString,
-            optimization_dot_v1_dot_optimizer__pb2.JobOutcome.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-    @staticmethod
-    def Collect(request_iterator,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.stream_unary(
-            request_iterator,
-            target,
-            '/optimization.v1.Optimizer/Collect',
-            optimization_dot_v1_dot_optimizer__pb2.SolveRequest.SerializeToString,
-            optimization_dot_v1_dot_optimizer__pb2.BatchResponse.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-    @staticmethod
     def SolveStream(request_iterator,
             target,
             options=(),
@@ -214,6 +145,33 @@ class Optimizer:
             target,
             '/optimization.v1.Optimizer/SolveStream',
             optimization_dot_v1_dot_optimizer__pb2.SolveRequest.SerializeToString,
+            optimization_dot_v1_dot_optimizer__pb2.JobOutcome.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SolveSession(request_iterator,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.stream_stream(
+            request_iterator,
+            target,
+            '/optimization.v1.Optimizer/SolveSession',
+            optimization_dot_v1_dot_optimizer__pb2.SessionRequest.SerializeToString,
             optimization_dot_v1_dot_optimizer__pb2.JobOutcome.FromString,
             options,
             channel_credentials,

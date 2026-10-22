@@ -114,6 +114,40 @@ def prepare_model(model: Any, request_id: str) -> PreparedModel:
     return PreparedModel(pb.SolveRequest(request_id=request_id, model=lp), tuple(variables), objective_constant)
 
 
+def _bounds(message: Any) -> tuple[float | None, float | None]:
+    return (
+        message.lower if message.HasField("lower") else None,
+        message.upper if message.HasField("upper") else None,
+    )
+
+
+def session_input(base: pb.LinearProgram, request: pb.SolveRequest) -> pb.SolveInput:
+    """Encode a request as overrides of the base model, rejecting structural changes.
+
+    Only objective coefficients, variable bounds, and constraint bounds may differ.
+    """
+    model = request.model
+    if model.sense != base.sense:
+        raise ValueError("objective sense changed; create a new optimizer")
+    if len(model.variables) != len(base.variables) or len(model.constraints) != len(base.constraints):
+        raise ValueError("variable or constraint count changed; create a new optimizer")
+    job = pb.SolveInput(request_id=request.request_id, diagnostics=request.diagnostics)
+    if request.HasField("time_limit_seconds"):
+        job.time_limit_seconds = request.time_limit_seconds
+    for index, (var, old) in enumerate(zip(model.variables, base.variables, strict=True)):
+        if var.objective != old.objective:
+            job.objective_indices.append(index)
+            job.objective_values.append(var.objective)
+        if (bounds := _bounds(var)) != _bounds(old):
+            job.variable_bounds.add(index=index, lower=bounds[0], upper=bounds[1])
+    for index, (row, old) in enumerate(zip(model.constraints, base.constraints, strict=True)):
+        if row.indices != old.indices or row.coefficients != old.coefficients:
+            raise ValueError("constraint coefficients changed; create a new optimizer")
+        if (bounds := _bounds(row)) != _bounds(old):
+            job.constraint_bounds.add(index=index, lower=bounds[0], upper=bounds[1])
+    return job
+
+
 def to_solve_request(model: Any, request_id: str = "pyomo") -> tuple[pb.SolveRequest, list[Any]]:
     """Return a wire request and its variables in solution order, omitting objective offsets.
 

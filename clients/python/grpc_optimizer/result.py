@@ -4,6 +4,8 @@ import math
 from dataclasses import dataclass, field
 from enum import IntEnum
 
+import grpc
+
 from ._generated.optimization.v1 import optimizer_pb2 as pb
 from .adapter import PreparedModel
 
@@ -22,6 +24,18 @@ class SolveStatus(IntEnum):
 
 class ProtocolError(RuntimeError):
     """The server returned a response that cannot safely be applied to the model."""
+
+
+_STATUS_CODES = {code.value[0]: code for code in grpc.StatusCode}
+
+
+class JobError(RuntimeError):
+    """The server rejected one GrpcOptimizer solve; the optimizer stays open."""
+
+    def __init__(self, code: int, details: str) -> None:
+        self.code = _STATUS_CODES.get(code, grpc.StatusCode.UNKNOWN)
+        self.details = details
+        super().__init__(f"{self.code.name}: {details}")
 
 
 @dataclass(frozen=True)
@@ -83,3 +97,14 @@ def finish_solve(prepared: PreparedModel, response: pb.SolveResult, *, load_solu
         solver_status=response.solver_status,
         raw=response,
     )
+
+
+def finish_outcome(prepared: PreparedModel, outcome: pb.JobOutcome, *, load_solution: bool) -> SolveResult:
+    """Raise JobError for a rejected job; otherwise finish it like finish_solve."""
+    if outcome.request_id != prepared.request.request_id:
+        raise ProtocolError("outcome request_id does not match the submitted job")
+    if outcome.HasField("error"):
+        raise JobError(outcome.error.code, outcome.error.message)
+    if not outcome.HasField("result"):
+        raise ProtocolError("outcome has neither a result nor an error")
+    return finish_solve(prepared, outcome.result, load_solution=load_solution)

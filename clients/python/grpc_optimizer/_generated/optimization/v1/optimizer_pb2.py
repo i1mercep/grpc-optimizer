@@ -24,17 +24,17 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x1foptimization/v1/optimizer.proto\x12\x0foptimization.v1\"Y\n\x08Variable\x12\x11\n\tobjective\x18\x01 \x01(\x01\x12\x12\n\x05lower\x18\x02 \x01(\x01H\x00\x88\x01\x01\x12\x12\n\x05upper\x18\x03 \x01(\x01H\x01\x88\x01\x01\x42\x08\n\x06_lowerB\x08\n\x06_upper\"o\n\nConstraint\x12\x0f\n\x07indices\x18\x01 \x03(\r\x12\x14\n\x0c\x63oefficients\x18\x02 \x03(\x01\x12\x12\n\x05lower\x18\x03 \x01(\x01H\x00\x88\x01\x01\x12\x12\n\x05upper\x18\x04 \x01(\x01H\x01\x88\x01\x01\x42\x08\n\x06_lowerB\x08\n\x06_upper\"\x9f\x01\n\rLinearProgram\x12.\n\x05sense\x18\x01 \x01(\x0e\x32\x1f.optimization.v1.ObjectiveSense\x12,\n\tvariables\x18\x02 \x03(\x0b\x32\x19.optimization.v1.Variable\x12\x30\n\x0b\x63onstraints\x18\x03 \x03(\x0b\x32\x1b.optimization.v1.Constraint\"\x9e\x01\n\x0cSolveRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12-\n\x05model\x18\x02 \x01(\x0b\x32\x1e.optimization.v1.LinearProgram\x12\x13\n\x0b\x64iagnostics\x18\x03 \x01(\x08\x12\x1f\n\x12time_limit_seconds\x18\x04 \x01(\x01H\x00\x88\x01\x01\x42\x15\n\x13_time_limit_seconds\"\x82\x01\n\x08Solution\x12\x11\n\tobjective\x18\x01 \x01(\x01\x12\x17\n\x0fvariable_values\x18\x02 \x03(\x01\x12\x1d\n\x15\x63onstraint_activities\x18\x03 \x03(\x01\x12+\n\x04\x64ual\x18\x04 \x01(\x0b\x32\x1d.optimization.v1.DualSolution\"?\n\x0c\x44ualSolution\x12\x18\n\x10\x63onstraint_duals\x18\x01 \x03(\x01\x12\x15\n\rreduced_costs\x18\x02 \x03(\x01\"S\n\x07Timings\x12\x1a\n\x12validation_seconds\x18\x01 \x01(\x01\x12\x15\n\rbuild_seconds\x18\x02 \x01(\x01\x12\x15\n\rsolve_seconds\x18\x03 \x01(\x01\"\xf5\x01\n\x0bSolveResult\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12,\n\x06status\x18\x02 \x01(\x0e\x32\x1c.optimization.v1.SolveStatus\x12+\n\x08solution\x18\x03 \x01(\x0b\x32\x19.optimization.v1.Solution\x12)\n\x07timings\x18\x04 \x01(\x0b\x32\x18.optimization.v1.Timings\x12\x15\n\rsolver_status\x18\x05 \x01(\t\x12\x35\n\texecution\x18\x06 \x01(\x0b\x32\".optimization.v1.ExecutionSettings\"^\n\x11\x45xecutionSettings\x12\x12\n\ncpu_budget\x18\x01 \x01(\r\x12\x16\n\x0esolver_threads\x18\x02 \x01(\r\x12\x1d\n\x15max_concurrent_solves\x18\x03 \x01(\r\")\n\x08JobError\x12\x0c\n\x04\x63ode\x18\x01 \x01(\x05\x12\x0f\n\x07message\x18\x02 \x01(\t\"\x87\x01\n\nJobOutcome\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12.\n\x06result\x18\x02 \x01(\x0b\x32\x1c.optimization.v1.SolveResultH\x00\x12*\n\x05\x65rror\x18\x03 \x01(\x0b\x32\x19.optimization.v1.JobErrorH\x00\x42\t\n\x07outcome\";\n\x0c\x42\x61tchRequest\x12+\n\x04jobs\x18\x01 \x03(\x0b\x32\x1d.optimization.v1.SolveRequest\">\n\rBatchResponse\x12-\n\x08outcomes\x18\x01 \x03(\x0b\x32\x1b.optimization.v1.JobOutcome*m\n\x0eObjectiveSense\x12\x1f\n\x1bOBJECTIVE_SENSE_UNSPECIFIED\x10\x00\x12\x1c\n\x18OBJECTIVE_SENSE_MINIMIZE\x10\x01\x12\x1c\n\x18OBJECTIVE_SENSE_MAXIMIZE\x10\x02*\xbd\x02\n\x0bSolveStatus\x12\x1c\n\x18SOLVE_STATUS_UNSPECIFIED\x10\x00\x12\x18\n\x14SOLVE_STATUS_OPTIMAL\x10\x01\x12\x1b\n\x17SOLVE_STATUS_INFEASIBLE\x10\x02\x12\x1a\n\x16SOLVE_STATUS_UNBOUNDED\x10\x03\x12(\n$SOLVE_STATUS_INFEASIBLE_OR_UNBOUNDED\x10\x04\x12\x1b\n\x17SOLVE_STATUS_TIME_LIMIT\x10\x05\x12 \n\x1cSOLVE_STATUS_ITERATION_LIMIT\x10\x06\x12\x1c\n\x18SOLVE_STATUS_INTERRUPTED\x10\x07\x12\x1c\n\x18SOLVE_STATUS_OTHER_LIMIT\x10\x08\x12\x18\n\x14SOLVE_STATUS_UNKNOWN\x10\t2\xb8\x02\n\tOptimizer\x12\x44\n\x05Solve\x12\x1d.optimization.v1.SolveRequest\x1a\x1c.optimization.v1.SolveResult\x12J\n\nSolveBatch\x12\x1d.optimization.v1.BatchRequest\x1a\x1b.optimization.v1.JobOutcome0\x01\x12J\n\x07\x43ollect\x12\x1d.optimization.v1.SolveRequest\x1a\x1e.optimization.v1.BatchResponse(\x01\x12M\n\x0bSolveStream\x12\x1d.optimization.v1.SolveRequest\x1a\x1b.optimization.v1.JobOutcome(\x01\x30\x01\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x1foptimization/v1/optimizer.proto\x12\x0foptimization.v1\"Y\n\x08Variable\x12\x11\n\tobjective\x18\x01 \x01(\x01\x12\x12\n\x05lower\x18\x02 \x01(\x01H\x00\x88\x01\x01\x12\x12\n\x05upper\x18\x03 \x01(\x01H\x01\x88\x01\x01\x42\x08\n\x06_lowerB\x08\n\x06_upper\"o\n\nConstraint\x12\x0f\n\x07indices\x18\x01 \x03(\r\x12\x14\n\x0c\x63oefficients\x18\x02 \x03(\x01\x12\x12\n\x05lower\x18\x03 \x01(\x01H\x00\x88\x01\x01\x12\x12\n\x05upper\x18\x04 \x01(\x01H\x01\x88\x01\x01\x42\x08\n\x06_lowerB\x08\n\x06_upper\"\x9f\x01\n\rLinearProgram\x12.\n\x05sense\x18\x01 \x01(\x0e\x32\x1f.optimization.v1.ObjectiveSense\x12,\n\tvariables\x18\x02 \x03(\x0b\x32\x19.optimization.v1.Variable\x12\x30\n\x0b\x63onstraints\x18\x03 \x03(\x0b\x32\x1b.optimization.v1.Constraint\"\x9e\x01\n\x0cSolveRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12-\n\x05model\x18\x02 \x01(\x0b\x32\x1e.optimization.v1.LinearProgram\x12\x13\n\x0b\x64iagnostics\x18\x03 \x01(\x08\x12\x1f\n\x12time_limit_seconds\x18\x04 \x01(\x01H\x00\x88\x01\x01\x42\x15\n\x13_time_limit_seconds\"w\n\x0eSessionRequest\x12/\n\x05model\x18\x01 \x01(\x0b\x32\x1e.optimization.v1.LinearProgramH\x00\x12,\n\x05input\x18\x02 \x01(\x0b\x32\x1b.optimization.v1.SolveInputH\x00\x42\x06\n\x04kind\"Z\n\rBoundOverride\x12\r\n\x05index\x18\x01 \x01(\r\x12\x12\n\x05lower\x18\x02 \x01(\x01H\x00\x88\x01\x01\x12\x12\n\x05upper\x18\x03 \x01(\x01H\x01\x88\x01\x01\x42\x08\n\x06_lowerB\x08\n\x06_upper\"\x96\x02\n\nSolveInput\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\x13\n\x0b\x64iagnostics\x18\x02 \x01(\x08\x12\x1f\n\x12time_limit_seconds\x18\x03 \x01(\x01H\x00\x88\x01\x01\x12\x19\n\x11objective_indices\x18\x04 \x03(\r\x12\x18\n\x10objective_values\x18\x05 \x03(\x01\x12\x37\n\x0fvariable_bounds\x18\x06 \x03(\x0b\x32\x1e.optimization.v1.BoundOverride\x12\x39\n\x11\x63onstraint_bounds\x18\x07 \x03(\x0b\x32\x1e.optimization.v1.BoundOverrideB\x15\n\x13_time_limit_seconds\"\x82\x01\n\x08Solution\x12\x11\n\tobjective\x18\x01 \x01(\x01\x12\x17\n\x0fvariable_values\x18\x02 \x03(\x01\x12\x1d\n\x15\x63onstraint_activities\x18\x03 \x03(\x01\x12+\n\x04\x64ual\x18\x04 \x01(\x0b\x32\x1d.optimization.v1.DualSolution\"?\n\x0c\x44ualSolution\x12\x18\n\x10\x63onstraint_duals\x18\x01 \x03(\x01\x12\x15\n\rreduced_costs\x18\x02 \x03(\x01\"S\n\x07Timings\x12\x1a\n\x12validation_seconds\x18\x01 \x01(\x01\x12\x15\n\rbuild_seconds\x18\x02 \x01(\x01\x12\x15\n\rsolve_seconds\x18\x03 \x01(\x01\"\xf5\x01\n\x0bSolveResult\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12,\n\x06status\x18\x02 \x01(\x0e\x32\x1c.optimization.v1.SolveStatus\x12+\n\x08solution\x18\x03 \x01(\x0b\x32\x19.optimization.v1.Solution\x12)\n\x07timings\x18\x04 \x01(\x0b\x32\x18.optimization.v1.Timings\x12\x15\n\rsolver_status\x18\x05 \x01(\t\x12\x35\n\texecution\x18\x06 \x01(\x0b\x32\".optimization.v1.ExecutionSettings\"^\n\x11\x45xecutionSettings\x12\x12\n\ncpu_budget\x18\x01 \x01(\r\x12\x16\n\x0esolver_threads\x18\x02 \x01(\r\x12\x1d\n\x15max_concurrent_solves\x18\x03 \x01(\r\")\n\x08JobError\x12\x0c\n\x04\x63ode\x18\x01 \x01(\x05\x12\x0f\n\x07message\x18\x02 \x01(\t\"\x87\x01\n\nJobOutcome\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12.\n\x06result\x18\x02 \x01(\x0b\x32\x1c.optimization.v1.SolveResultH\x00\x12*\n\x05\x65rror\x18\x03 \x01(\x0b\x32\x19.optimization.v1.JobErrorH\x00\x42\t\n\x07outcome*m\n\x0eObjectiveSense\x12\x1f\n\x1bOBJECTIVE_SENSE_UNSPECIFIED\x10\x00\x12\x1c\n\x18OBJECTIVE_SENSE_MINIMIZE\x10\x01\x12\x1c\n\x18OBJECTIVE_SENSE_MAXIMIZE\x10\x02*\xbd\x02\n\x0bSolveStatus\x12\x1c\n\x18SOLVE_STATUS_UNSPECIFIED\x10\x00\x12\x18\n\x14SOLVE_STATUS_OPTIMAL\x10\x01\x12\x1b\n\x17SOLVE_STATUS_INFEASIBLE\x10\x02\x12\x1a\n\x16SOLVE_STATUS_UNBOUNDED\x10\x03\x12(\n$SOLVE_STATUS_INFEASIBLE_OR_UNBOUNDED\x10\x04\x12\x1b\n\x17SOLVE_STATUS_TIME_LIMIT\x10\x05\x12 \n\x1cSOLVE_STATUS_ITERATION_LIMIT\x10\x06\x12\x1c\n\x18SOLVE_STATUS_INTERRUPTED\x10\x07\x12\x1c\n\x18SOLVE_STATUS_OTHER_LIMIT\x10\x08\x12\x18\n\x14SOLVE_STATUS_UNKNOWN\x10\t2\xf2\x01\n\tOptimizer\x12\x44\n\x05Solve\x12\x1d.optimization.v1.SolveRequest\x1a\x1c.optimization.v1.SolveResult\x12M\n\x0bSolveStream\x12\x1d.optimization.v1.SolveRequest\x1a\x1b.optimization.v1.JobOutcome(\x01\x30\x01\x12P\n\x0cSolveSession\x12\x1f.optimization.v1.SessionRequest\x1a\x1b.optimization.v1.JobOutcome(\x01\x30\x01\x62\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'grpc_optimizer._generated.optimization.v1.optimizer_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_OBJECTIVESENSE']._serialized_start=1512
-  _globals['_OBJECTIVESENSE']._serialized_end=1621
-  _globals['_SOLVESTATUS']._serialized_start=1624
-  _globals['_SOLVESTATUS']._serialized_end=1941
+  _globals['_OBJECTIVESENSE']._serialized_start=1881
+  _globals['_OBJECTIVESENSE']._serialized_end=1990
+  _globals['_SOLVESTATUS']._serialized_start=1993
+  _globals['_SOLVESTATUS']._serialized_end=2310
   _globals['_VARIABLE']._serialized_start=52
   _globals['_VARIABLE']._serialized_end=141
   _globals['_CONSTRAINT']._serialized_start=143
@@ -43,24 +43,26 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_LINEARPROGRAM']._serialized_end=416
   _globals['_SOLVEREQUEST']._serialized_start=419
   _globals['_SOLVEREQUEST']._serialized_end=577
-  _globals['_SOLUTION']._serialized_start=580
-  _globals['_SOLUTION']._serialized_end=710
-  _globals['_DUALSOLUTION']._serialized_start=712
-  _globals['_DUALSOLUTION']._serialized_end=775
-  _globals['_TIMINGS']._serialized_start=777
-  _globals['_TIMINGS']._serialized_end=860
-  _globals['_SOLVERESULT']._serialized_start=863
-  _globals['_SOLVERESULT']._serialized_end=1108
-  _globals['_EXECUTIONSETTINGS']._serialized_start=1110
-  _globals['_EXECUTIONSETTINGS']._serialized_end=1204
-  _globals['_JOBERROR']._serialized_start=1206
-  _globals['_JOBERROR']._serialized_end=1247
-  _globals['_JOBOUTCOME']._serialized_start=1250
-  _globals['_JOBOUTCOME']._serialized_end=1385
-  _globals['_BATCHREQUEST']._serialized_start=1387
-  _globals['_BATCHREQUEST']._serialized_end=1446
-  _globals['_BATCHRESPONSE']._serialized_start=1448
-  _globals['_BATCHRESPONSE']._serialized_end=1510
-  _globals['_OPTIMIZER']._serialized_start=1944
-  _globals['_OPTIMIZER']._serialized_end=2256
+  _globals['_SESSIONREQUEST']._serialized_start=579
+  _globals['_SESSIONREQUEST']._serialized_end=698
+  _globals['_BOUNDOVERRIDE']._serialized_start=700
+  _globals['_BOUNDOVERRIDE']._serialized_end=790
+  _globals['_SOLVEINPUT']._serialized_start=793
+  _globals['_SOLVEINPUT']._serialized_end=1071
+  _globals['_SOLUTION']._serialized_start=1074
+  _globals['_SOLUTION']._serialized_end=1204
+  _globals['_DUALSOLUTION']._serialized_start=1206
+  _globals['_DUALSOLUTION']._serialized_end=1269
+  _globals['_TIMINGS']._serialized_start=1271
+  _globals['_TIMINGS']._serialized_end=1354
+  _globals['_SOLVERESULT']._serialized_start=1357
+  _globals['_SOLVERESULT']._serialized_end=1602
+  _globals['_EXECUTIONSETTINGS']._serialized_start=1604
+  _globals['_EXECUTIONSETTINGS']._serialized_end=1698
+  _globals['_JOBERROR']._serialized_start=1700
+  _globals['_JOBERROR']._serialized_end=1741
+  _globals['_JOBOUTCOME']._serialized_start=1744
+  _globals['_JOBOUTCOME']._serialized_end=1879
+  _globals['_OPTIMIZER']._serialized_start=2313
+  _globals['_OPTIMIZER']._serialized_end=2555
 # @@protoc_insertion_point(module_scope)

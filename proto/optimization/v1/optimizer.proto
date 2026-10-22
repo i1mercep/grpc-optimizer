@@ -3,9 +3,9 @@ package optimization.v1;
 
 service Optimizer {
   rpc Solve(SolveRequest) returns (SolveResult);
-  rpc SolveBatch(BatchRequest) returns (stream JobOutcome);
-  rpc Collect(stream SolveRequest) returns (BatchResponse);
   rpc SolveStream(stream SolveRequest) returns (stream JobOutcome);
+  // Sends the model once, then streams per-job input values; reconnect to change it.
+  rpc SolveSession(stream SessionRequest) returns (stream JobOutcome);
 }
 
 enum ObjectiveSense {
@@ -42,6 +42,34 @@ message SolveRequest {
   bool diagnostics = 3;
   // Positive seconds, clamped to the server maximum and remaining RPC deadline.
   optional double time_limit_seconds = 4;
+}
+
+message SessionRequest {
+  oneof kind {
+    // Required as the first message and allowed only once.
+    LinearProgram model = 1;
+    SolveInput input = 2;
+  }
+}
+
+// Replaces bounds of one variable or constraint; omitted sides mean +/- infinity.
+message BoundOverride {
+  uint32 index = 1;
+  optional double lower = 2;
+  optional double upper = 3;
+}
+
+// Sparse changes applied to the session model for this job only.
+// Each index may occur only once per list.
+message SolveInput {
+  string request_id = 1;
+  bool diagnostics = 2;
+  optional double time_limit_seconds = 3;
+  // Parallel packed arrays of variable indices and new objective coefficients.
+  repeated uint32 objective_indices = 4;
+  repeated double objective_values = 5;
+  repeated BoundOverride variable_bounds = 6;
+  repeated BoundOverride constraint_bounds = 7;
 }
 
 enum SolveStatus {
@@ -106,6 +134,3 @@ message JobOutcome {
     JobError error = 3;
   }
 }
-
-message BatchRequest { repeated SolveRequest jobs = 1; }
-message BatchResponse { repeated JobOutcome outcomes = 1; }

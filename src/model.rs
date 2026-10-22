@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use crate::{
     config::Config,
-    pb::{ObjectiveSense, SolveRequest},
+    pb::{LinearProgram, ObjectiveSense, SolveInput, SolveRequest},
 };
 
 /// Request and execution failures; mathematical solve outcomes are returned in `SolveResult`.
@@ -46,6 +46,12 @@ pub fn validate(request: &SolveRequest, config: &Config) -> Result<()> {
         .model
         .as_ref()
         .ok_or_else(|| invalid("model is required"))?;
+    validate_model(model, config)
+}
+
+/// Applies the model checks of [`validate`] without request-level fields.
+pub fn validate_model(model: &LinearProgram, config: &Config) -> Result<()> {
+    let invalid = |message: &str| Error::Invalid(message.to_owned());
     if !matches!(
         ObjectiveSense::try_from(model.sense),
         Ok(ObjectiveSense::Minimize | ObjectiveSense::Maximize)
@@ -99,6 +105,63 @@ pub fn validate(request: &SolveRequest, config: &Config) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Builds a job from a session model and sparse input overrides.
+///
+/// Checks override indices only; call [`validate`] on the result for values.
+pub fn apply(base: &LinearProgram, input: SolveInput) -> Result<SolveRequest> {
+    if input.objective_indices.len() != input.objective_values.len() {
+        return Err(Error::Invalid(
+            "objective indices and values must have equal lengths".into(),
+        ));
+    }
+    let mut model = base.clone();
+    let mut seen = HashSet::new();
+    for (&index, &value) in input.objective_indices.iter().zip(&input.objective_values) {
+        override_target(&mut model.variables, index, &mut seen, "objective")?.objective = value;
+    }
+    seen.clear();
+    for bound in &input.variable_bounds {
+        let var = override_target(
+            &mut model.variables,
+            bound.index,
+            &mut seen,
+            "variable bound",
+        )?;
+        (var.lower, var.upper) = (bound.lower, bound.upper);
+    }
+    seen.clear();
+    for bound in &input.constraint_bounds {
+        let row = override_target(
+            &mut model.constraints,
+            bound.index,
+            &mut seen,
+            "constraint bound",
+        )?;
+        (row.lower, row.upper) = (bound.lower, bound.upper);
+    }
+    Ok(SolveRequest {
+        request_id: input.request_id,
+        model: Some(model),
+        diagnostics: input.diagnostics,
+        time_limit_seconds: input.time_limit_seconds,
+    })
+}
+
+/// Returns the item at `index`, rejecting out-of-range and repeated indices.
+fn override_target<'a, T>(
+    items: &'a mut [T],
+    index: u32,
+    seen: &mut HashSet<u32>,
+    kind: &str,
+) -> Result<&'a mut T> {
+    if !seen.insert(index) {
+        return Err(Error::Invalid(format!("duplicate {kind} index")));
+    }
+    items
+        .get_mut(index as usize)
+        .ok_or_else(|| Error::Invalid(format!("{kind} index is out of range")))
 }
 
 /// Validates inclusive finite bounds, using `None` for either unbounded side.

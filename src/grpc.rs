@@ -18,14 +18,67 @@ use tonic::{Code, Request, Response, Status};
 
 use crate::{
     engine::Engine,
-    model::Error,
+    model::{self, Error},
     pb::{
-        BatchRequest, BatchResponse, JobError, JobOutcome, SolveRequest, SolveResult, job_outcome,
+        JobError, JobOutcome, LinearProgram, SessionRequest, SolveRequest, SolveResult,
+        job_outcome,
         optimizer_server::{Optimizer, OptimizerServer},
+        session_request,
     },
 };
 
-/// Serves all four RPC modes using one engine's shared resource limits.
+/// A stream job whose request may have failed before reaching the engine.
+struct Job {
+    request_id: String,
+    request: model::Result<SolveRequest>,
+}
+
+impl From<SolveRequest> for Job {
+    fn from(request: SolveRequest) -> Self {
+        Self {
+            request_id: request.request_id.clone(),
+            request: Ok(request),
+        }
+    }
+}
+
+/// Validates the leading session model once, then expands each input into a job.
+///
+/// Protocol violations and an invalid model terminate the stream; bad overrides
+/// become per-job errors.
+fn session_jobs(
+    input: BoxStream<'static, Result<SessionRequest, Status>>,
+    engine: Engine,
+) -> BoxStream<'static, Result<Job, Status>> {
+    let mut base: Option<LinearProgram> = None;
+    input
+        .filter_map(move |item| {
+            let job = item.and_then(|message| match message.kind {
+                None => Err(Status::invalid_argument("session message is empty")),
+                Some(session_request::Kind::Model(_)) if base.is_some() => Err(
+                    Status::invalid_argument("session model is already set; open a new session"),
+                ),
+                Some(session_request::Kind::Model(model)) => {
+                    model::validate_model(&model, &engine.config).map_err(to_status)?;
+                    base = Some(model);
+                    Ok(None)
+                }
+                Some(session_request::Kind::Input(input)) => {
+                    let base = base.as_ref().ok_or_else(|| {
+                        Status::invalid_argument("first session message must contain the model")
+                    })?;
+                    Ok(Some(Job {
+                        request_id: input.request_id.clone(),
+                        request: model::apply(base, input),
+                    }))
+                }
+            });
+            futures::future::ready(job.transpose())
+        })
+        .boxed()
+}
+
+/// Serves unary and bidirectional RPCs using one engine's shared resource limits.
 #[derive(Clone)]
 pub struct Service {
     engine: Engine,
@@ -47,21 +100,19 @@ impl Service {
 
     /// Runs jobs in completion order with a window covering active and unread results.
     ///
-    /// `finite` enforces the batch job cap for `SolveBatch` and `Collect`. Job failures
-    /// become outcomes; input, shutdown, and deadline failures terminate the stream.
+    /// Job failures become outcomes; input, shutdown, and deadline failures terminate
+    /// the stream.
     fn start_stream(
         &self,
-        input: BoxStream<'static, Result<SolveRequest, Status>>,
+        input: BoxStream<'static, Result<Job, Status>>,
         deadline: Option<Instant>,
         permit: OwnedSemaphorePermit,
-        finite: bool,
     ) -> ResponseStream {
         let engine = self.engine.clone();
         let window = engine
             .config
             .stream_window
             .min(engine.config.max_concurrent_solves);
-        let batch_limit = engine.config.max_batch_jobs;
         let slots = Arc::new(Semaphore::new(window));
         let cancel = CancellationToken::new();
         let worker_cancel = cancel.clone();
@@ -75,24 +126,14 @@ impl Service {
             // A permit follows each job through execution and the output channel. It
             // is released only when the consumer polls the result (or disconnects).
             let jobs = stream::unfold(
-                (input, slots, 0usize),
-                move |(mut input, slots, index): (
-                    BoxStream<'static, Result<SolveRequest, Status>>,
+                (input, slots),
+                move |(mut input, slots): (
+                    BoxStream<'static, Result<Job, Status>>,
                     Arc<Semaphore>,
-                    usize,
                 )| async move {
                     let permit = slots.clone().acquire_owned().await.ok()?;
-                    let item = input.next().await?;
-                    let item = item.and_then(|job| {
-                        if finite && index >= batch_limit {
-                            Err(Status::resource_exhausted(
-                                "client stream exceeds batch job limit",
-                            ))
-                        } else {
-                            Ok((index, job, permit))
-                        }
-                    });
-                    Some((item, (input, slots, index.saturating_add(1))))
+                    let item = input.next().await?.map(|job| (job, permit));
+                    Some((item, (input, slots)))
                 },
             )
             .boxed();
@@ -100,9 +141,13 @@ impl Service {
                 let engine = engine.clone();
                 let cancel = worker_cancel.clone();
                 async move {
-                    let (index, job, permit) = item?;
-                    let request_id = job.request_id.clone();
-                    let outcome = match engine.solve(job, deadline, cancel).await.and_then(|result| {
+                    let (job, permit) = item?;
+                    let request_id = job.request_id;
+                    let solved = match job.request {
+                        Ok(request) => engine.solve(request, deadline, cancel).await,
+                        Err(error) => Err(error),
+                    };
+                    let outcome = match solved.and_then(|result| {
                         if result.encoded_len().saturating_add(request_id.len() + 32) > engine.config.max_message_bytes {
                             Err(Error::Exhausted("solution exceeds message limit".into()))
                         } else { Ok(result) }
@@ -114,7 +159,7 @@ impl Service {
                             job_outcome::Outcome::Error(JobError { code: status.code() as i32, message: status.message().to_owned() })
                         }
                     };
-                    Ok(Delivery { index, outcome: JobOutcome { request_id, outcome: Some(outcome) }, _permit: permit })
+                    Ok(Delivery { outcome: JobOutcome { request_id, outcome: Some(outcome) }, _permit: permit })
                 }
             }).buffer_unordered(window);
             tokio::pin!(outcomes);
@@ -143,15 +188,13 @@ impl Service {
             rx,
             _rpc_permit: permit,
             _cancel: cancel.drop_guard(),
-            deadline,
             terminal,
         }
     }
 }
 
-/// Carries a job's input position and retains its window slot until consumption.
+/// Retains a job's window slot until its outcome is consumed.
 struct Delivery {
-    index: usize,
     outcome: JobOutcome,
     _permit: OwnedSemaphorePermit,
 }
@@ -162,7 +205,6 @@ pub struct ResponseStream {
     rx: mpsc::Receiver<Result<Delivery, Status>>,
     _rpc_permit: OwnedSemaphorePermit,
     _cancel: DropGuard,
-    deadline: Option<Instant>,
     terminal: Arc<Mutex<Option<Status>>>,
 }
 
@@ -179,8 +221,8 @@ impl Stream for ResponseStream {
 
 #[tonic::async_trait]
 impl Optimizer for Service {
-    type SolveBatchStream = ResponseStream;
     type SolveStreamStream = ResponseStream;
+    type SolveSessionStream = ResponseStream;
 
     /// Returns a single result or a transport status for request/execution failure.
     async fn solve(&self, request: Request<SolveRequest>) -> Result<Response<SolveResult>, Status> {
@@ -201,66 +243,6 @@ impl Optimizer for Service {
         }
     }
 
-    /// Streams a bounded batch in completion order, preserving errors per job.
-    async fn solve_batch(
-        &self,
-        request: Request<BatchRequest>,
-    ) -> Result<Response<Self::SolveBatchStream>, Status> {
-        let permit = self.engine.admit_rpc().map_err(to_status)?;
-        let deadline = deadline(&request)?;
-        if request.get_ref().jobs.len() > self.engine.config.max_batch_jobs {
-            return Err(Status::resource_exhausted("batch exceeds job limit"));
-        }
-        let input = stream::iter(request.into_inner().jobs.into_iter().map(Ok)).boxed();
-        Ok(Response::new(
-            self.start_stream(input, deadline, permit, true),
-        ))
-    }
-
-    /// Collects a finite input stream into one size-limited response in input order.
-    async fn collect(
-        &self,
-        request: Request<tonic::Streaming<SolveRequest>>,
-    ) -> Result<Response<BatchResponse>, Status> {
-        let permit = self.engine.admit_rpc().map_err(to_status)?;
-        let deadline = deadline(&request)?;
-        let mut stream = self.start_stream(request.into_inner().boxed(), deadline, permit, true);
-        let mut ordered = Vec::new();
-        let mut bytes = 0usize;
-        while let Some(item) = stream.rx.recv().await {
-            let delivery = item?;
-            let size = delivery.outcome.encoded_len();
-            // Each repeated message adds a one-byte field tag and a varint length prefix.
-            bytes =
-                bytes.saturating_add(1 + prost::encoding::encoded_len_varint(size as u64) + size);
-            if bytes
-                > self
-                    .engine
-                    .config
-                    .max_collect_bytes
-                    .min(self.engine.config.max_message_bytes)
-            {
-                return Err(Status::resource_exhausted(
-                    "collected response exceeds byte limit",
-                ));
-            }
-            ordered.push((delivery.index, delivery.outcome));
-        }
-        if let Some(error) = stream.terminal.lock().unwrap().take() {
-            return Err(error);
-        }
-        if stream.deadline.is_some_and(|d| Instant::now() >= d) {
-            return Err(Status::deadline_exceeded("RPC deadline exceeded"));
-        }
-        if self.engine.shutdown_token().is_cancelled() {
-            return Err(Status::unavailable("server is shutting down"));
-        }
-        ordered.sort_unstable_by_key(|(index, _)| *index);
-        Ok(Response::new(BatchResponse {
-            outcomes: ordered.into_iter().map(|(_, outcome)| outcome).collect(),
-        }))
-    }
-
     /// Processes a persistent input stream with backpressure and one shared deadline.
     async fn solve_stream(
         &self,
@@ -269,10 +251,23 @@ impl Optimizer for Service {
         let permit = self.engine.admit_rpc().map_err(to_status)?;
         let deadline = deadline(&request)?;
         Ok(Response::new(self.start_stream(
-            request.into_inner().boxed(),
+            request.into_inner().map(|item| item.map(Job::from)).boxed(),
             deadline,
             permit,
-            false,
+        )))
+    }
+
+    /// Streams jobs against one model sent at the start of the call.
+    async fn solve_session(
+        &self,
+        request: Request<tonic::Streaming<SessionRequest>>,
+    ) -> Result<Response<Self::SolveSessionStream>, Status> {
+        let permit = self.engine.admit_rpc().map_err(to_status)?;
+        let deadline = deadline(&request)?;
+        Ok(Response::new(self.start_stream(
+            session_jobs(request.into_inner().boxed(), self.engine.clone()),
+            deadline,
+            permit,
         )))
     }
 }
@@ -356,13 +351,13 @@ mod tests {
         let input = stream::iter((0..10).map(|i| {
             let mut job = samples::fixture("production").unwrap().request;
             job.request_id = i.to_string();
-            Ok(job)
+            Ok(Job::from(job))
         }))
         .inspect(move |_| {
             counter.fetch_add(1, Ordering::SeqCst);
         })
         .boxed();
-        let mut output = service.start_stream(input, None, engine.admit_rpc().unwrap(), false);
+        let mut output = service.start_stream(input, None, engine.admit_rpc().unwrap());
         tokio::time::timeout(Duration::from_secs(3), async {
             while reads.load(Ordering::SeqCst) < 2 {
                 tokio::task::yield_now().await;

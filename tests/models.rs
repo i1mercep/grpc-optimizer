@@ -4,7 +4,7 @@ use grpc_optimizer::{
     config::Config,
     engine::Engine,
     model::{self, Error},
-    pb::{SolveRequest, SolveStatus},
+    pb::{BoundOverride, SolveInput, SolveRequest, SolveStatus},
     samples::{self, Family},
     solver,
 };
@@ -158,6 +158,76 @@ fn validation_rejects_malformed_inputs_and_model_limits() {
             model::validate(&base, &config),
             Err(Error::Exhausted(_))
         ));
+    }
+}
+
+#[test]
+fn session_overrides_replace_values_and_reject_bad_indices() {
+    let base = samples::fixture("production")
+        .unwrap()
+        .request
+        .model
+        .unwrap();
+    let input = SolveInput {
+        request_id: "a".into(),
+        diagnostics: true,
+        time_limit_seconds: Some(1.0),
+        objective_indices: vec![1],
+        objective_values: vec![50.0],
+        variable_bounds: vec![BoundOverride {
+            index: 0,
+            lower: None,
+            upper: Some(10.0),
+        }],
+        constraint_bounds: vec![BoundOverride {
+            index: 1,
+            lower: Some(1.0),
+            upper: None,
+        }],
+    };
+    let request = model::apply(&base, input.clone()).unwrap();
+    assert_eq!(request.request_id, "a");
+    assert!(request.diagnostics);
+    assert_eq!(request.time_limit_seconds, Some(1.0));
+    let applied = request.model.unwrap();
+    assert_eq!(applied.variables[0].objective, 40.0);
+    assert_eq!(applied.variables[1].objective, 50.0);
+    assert_eq!(
+        (applied.variables[0].lower, applied.variables[0].upper),
+        (None, Some(10.0))
+    );
+    assert_eq!(applied.variables[1].lower, base.variables[1].lower);
+    assert_eq!(
+        (applied.constraints[1].lower, applied.constraints[1].upper),
+        (Some(1.0), None)
+    );
+    assert_eq!(applied.constraints[0], base.constraints[0]);
+
+    let duplicate = || BoundOverride {
+        index: 0,
+        lower: None,
+        upper: None,
+    };
+    type Mutation = Box<dyn Fn(&mut SolveInput)>;
+    let mutations: Vec<Mutation> = vec![
+        Box::new(|i| i.objective_values.clear()),
+        Box::new(|i| i.objective_indices[0] = 2),
+        Box::new(|i| {
+            i.objective_indices.push(1);
+            i.objective_values.push(1.0);
+        }),
+        Box::new(|i| i.variable_bounds[0].index = 2),
+        Box::new(move |i| i.variable_bounds.push(duplicate())),
+        Box::new(|i| i.constraint_bounds[0].index = 2),
+        Box::new(move |i| {
+            i.constraint_bounds[0].index = 0;
+            i.constraint_bounds.push(duplicate());
+        }),
+    ];
+    for mutate in mutations {
+        let mut bad = input.clone();
+        mutate(&mut bad);
+        assert!(matches!(model::apply(&base, bad), Err(Error::Invalid(_))));
     }
 }
 

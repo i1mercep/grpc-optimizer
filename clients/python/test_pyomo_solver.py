@@ -8,7 +8,17 @@ from unittest.mock import AsyncMock, Mock, patch
 import grpc
 import pyomo.environ as pyo
 
-from grpc_optimizer import AsyncPyomoClient, ProtocolError, PyomoClient, SolveStatus, solve, solve_async
+from grpc_optimizer import (
+    AsyncGrpcOptimizer,
+    AsyncPyomoClient,
+    GrpcOptimizer,
+    JobError,
+    ProtocolError,
+    PyomoClient,
+    SolveStatus,
+    solve,
+    solve_async,
+)
 from grpc_optimizer._generated.optimization.v1 import optimizer_pb2 as pb
 
 
@@ -29,6 +39,68 @@ def response(request, **_kwargs):
         solution=pb.Solution(objective=22, variable_values=[4, 5]),
         solver_status="Optimal",
     )
+
+
+def session_model():
+    m = pyo.ConcreteModel()
+    m.price = pyo.Param(initialize=3, mutable=True)
+    m.cap = pyo.Param(initialize=10, mutable=True)
+    m.x = pyo.Var(bounds=(0, None), initialize=1)
+    m.y = pyo.Var(bounds=(0, None), initialize=2)
+    m.objective = pyo.Objective(expr=m.price * m.x + 2 * m.y + 7, sense=pyo.maximize)
+    m.capacity = pyo.Constraint(expr=m.x + m.y <= m.cap)
+    return m
+
+
+def outcome(job):
+    if job.request_id == "reject":
+        return pb.JobOutcome(request_id=job.request_id, error=pb.JobError(code=8, message="busy"))
+    return pb.JobOutcome(request_id=job.request_id, result=response(job))
+
+
+class FakeSessionCall:
+    """Synchronous stream double that reads one request per response."""
+
+    def __init__(self, requests, timeout=None):
+        self.requests = requests
+        self.timeout = timeout
+        self.model = pb.LinearProgram()
+        self.started = False
+        self.inputs = []
+        self.cancelled = False
+        self.error = None
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.error is not None:
+            raise self.error
+        if not self.started:
+            self.model = next(self.requests).model
+            self.started = True
+        job = next(self.requests).input
+        self.inputs.append(job)
+        return outcome(job)
+
+    def cancel(self):
+        self.cancelled = True
+
+
+class FakeAsyncSessionCall:
+    def __init__(self, timeout=None):
+        self.timeout = timeout
+        self.messages = []
+        self.cancelled = False
+
+    async def write(self, message):
+        self.messages.append(message)
+
+    async def read(self):
+        return outcome(self.messages[-1].input)
+
+    def cancel(self):
+        self.cancelled = True
 
 
 class SolverTests(unittest.TestCase):
@@ -195,6 +267,83 @@ class SolverTests(unittest.TestCase):
         self.assertEqual(pyo.value(m.x), 1)
         self.channel.close.assert_called_once()
 
+    def open_optimizer(self, m, endpoint=None, **kwargs):
+        calls = []
+
+        def start(requests, **call_kwargs):
+            calls.append(FakeSessionCall(requests, **call_kwargs))
+            return calls[-1]
+
+        self.stub.SolveSession.side_effect = start
+        channel = None if endpoint else self.channel
+        return GrpcOptimizer(m, endpoint, channel=channel, **kwargs), calls
+
+    def test_optimizer_sends_model_once_then_only_changed_values(self):
+        m = session_model()
+        optimizer, calls = self.open_optimizer(m, timeout=5)
+        with optimizer:
+            first = optimizer.solve(request_id="first")
+            m.price = 4
+            m.cap = 12
+            m.x.setub(8)
+            second = optimizer.solve(request_id="second", diagnostics=True, time_limit=2)
+        call = calls[0]
+        self.assertEqual(call.timeout, 5)
+        self.assertEqual(call.model.variables[0].objective, 3)
+        self.assertEqual(call.model.constraints[0].upper, 10)
+        self.assertEqual(call.inputs[0], pb.SolveInput(request_id="first"))
+        job = call.inputs[1]
+        self.assertEqual((list(job.objective_indices), list(job.objective_values)), ([0], [4]))
+        self.assertEqual(list(job.variable_bounds), [pb.BoundOverride(index=0, lower=0, upper=8)])
+        self.assertEqual(list(job.constraint_bounds), [pb.BoundOverride(index=0, upper=12)])
+        self.assertTrue(job.diagnostics)
+        self.assertEqual(job.time_limit_seconds, 2)
+        self.assertEqual((first.objective, second.objective), (29, 33))
+        self.assertEqual((pyo.value(m.x), pyo.value(m.y)), (4, 5))
+        self.assertTrue(call.cancelled)
+        self.channel.close.assert_not_called()
+        with self.assertRaisesRegex(RuntimeError, "closed"):
+            optimizer.solve()
+
+    def test_structural_changes_fail_locally_and_job_errors_keep_optimizer_open(self):
+        m = session_model()
+        optimizer, calls = self.open_optimizer(m)
+        m.objective.sense = pyo.minimize
+        with self.assertRaisesRegex(ValueError, "sense"):
+            optimizer.solve()
+        m.objective.sense = pyo.maximize
+        m.extra = pyo.Constraint(expr=m.x <= 1)
+        with self.assertRaisesRegex(ValueError, "count"):
+            optimizer.solve()
+        m.extra.deactivate()
+        m.capacity.set_value(2 * m.x + m.y <= m.cap)
+        with self.assertRaisesRegex(ValueError, "coefficients"):
+            optimizer.solve()
+        m.capacity.set_value(m.x + m.y <= m.cap)
+        with self.assertRaises(JobError) as caught:
+            optimizer.solve(request_id="reject")
+        self.assertEqual(caught.exception.code, grpc.StatusCode.RESOURCE_EXHAUSTED)
+        self.assertTrue(optimizer.solve().is_optimal)
+        self.assertEqual(len(calls[0].inputs), 2)
+        self.assertIsNone(calls[0].timeout)
+        optimizer.close()
+
+    def test_rpc_failure_closes_optimizer_and_owned_channel(self):
+        with patch("grpc_optimizer.client.grpc.insecure_channel", return_value=self.channel):
+            optimizer, calls = self.open_optimizer(session_model(), endpoint="server:50051")
+        calls[0].error = grpc.RpcError("unavailable")
+        with self.assertRaises(grpc.RpcError):
+            optimizer.solve()
+        self.assertTrue(calls[0].cancelled)
+        with self.assertRaisesRegex(RuntimeError, "closed"):
+            optimizer.solve()
+        optimizer.close()
+        self.channel.close.assert_called_once()
+        with self.assertRaises(ValueError):
+            GrpcOptimizer(session_model(), channel=self.channel, timeout=0)
+        with self.assertRaises(ValueError):
+            GrpcOptimizer(session_model(), "server:50051", channel=self.channel)
+
 
 class AsyncSolverTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -240,6 +389,35 @@ class AsyncSolverTests(unittest.IsolatedAsyncioTestCase):
         ):
             await solve_async(m)
         self.assertEqual(pyo.value(m.x), 1)
+        self.channel.close.assert_awaited_once()
+
+    async def test_async_optimizer_sends_model_once_and_cancellation_closes_it(self):
+        call = FakeAsyncSessionCall()
+        self.stub.SolveSession = Mock(return_value=call)
+        m = session_model()
+        async with AsyncGrpcOptimizer(m, channel=self.channel, timeout=5) as optimizer:
+            first = await optimizer.solve(request_id="first")
+            m.cap = 12
+            await optimizer.solve(request_id="second")
+            self.assertEqual(self.stub.SolveSession.call_args.kwargs, {"timeout": 5})
+            self.assertEqual([message.WhichOneof("kind") for message in call.messages], ["model", "input", "input"])
+            self.assertEqual(list(call.messages[2].input.constraint_bounds), [pb.BoundOverride(index=0, upper=12)])
+            self.assertEqual(first.objective, 29)
+            self.assertEqual(pyo.value(m.x), 4)
+            call.read = AsyncMock(side_effect=asyncio.CancelledError)
+            with self.assertRaises(asyncio.CancelledError):
+                await optimizer.solve()
+            self.assertTrue(call.cancelled)
+            with self.assertRaisesRegex(RuntimeError, "closed"):
+                await optimizer.solve()
+        self.channel.close.assert_not_awaited()
+
+    async def test_async_optimizer_closes_owned_channel_once(self):
+        self.stub.SolveSession = Mock(return_value=FakeAsyncSessionCall())
+        with patch("grpc_optimizer.client.grpc.aio.insecure_channel", return_value=self.channel):
+            optimizer = AsyncGrpcOptimizer(session_model(), "server:50051")
+        await optimizer.close()
+        await optimizer.close()
         self.channel.close.assert_awaited_once()
 
 

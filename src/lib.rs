@@ -1,4 +1,4 @@
-//! Continuous LP solving with bounded native workers and four gRPC interaction modes.
+//! Continuous LP solving with bounded native workers over unary and bidirectional gRPC.
 //!
 //! Use [`engine::Engine`] for admission control and async execution; [`solver::solve`]
 //! is the synchronous entry point for callers that manage their own worker capacity.

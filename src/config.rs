@@ -13,8 +13,6 @@ pub struct Config {
     pub max_concurrent_solves: usize,
     pub max_active_rpcs: usize,
     pub max_message_bytes: usize,
-    pub max_collect_bytes: usize,
-    pub max_batch_jobs: usize,
     pub stream_window: usize,
     pub default_time_limit_seconds: f64,
     pub max_time_limit_seconds: f64,
@@ -33,8 +31,6 @@ impl Default for Config {
             max_concurrent_solves: cpus,
             max_active_rpcs: 32,
             max_message_bytes: 16 * 1024 * 1024,
-            max_collect_bytes: 16 * 1024 * 1024,
-            max_batch_jobs: 64,
             stream_window: 8,
             default_time_limit_seconds: 30.0,
             max_time_limit_seconds: 300.0,
@@ -64,8 +60,6 @@ impl Config {
         read!(max_concurrent_solves, "OPT_MAX_CONCURRENT_SOLVES");
         read!(max_active_rpcs, "OPT_MAX_ACTIVE_RPCS");
         read!(max_message_bytes, "OPT_MAX_MESSAGE_BYTES");
-        read!(max_collect_bytes, "OPT_MAX_COLLECT_BYTES");
-        read!(max_batch_jobs, "OPT_MAX_BATCH_JOBS");
         read!(stream_window, "OPT_STREAM_WINDOW");
         read!(default_time_limit_seconds, "OPT_DEFAULT_TIME_LIMIT_SECONDS");
         read!(max_time_limit_seconds, "OPT_MAX_TIME_LIMIT_SECONDS");
@@ -84,8 +78,6 @@ impl Config {
             ("concurrent solves", self.max_concurrent_solves),
             ("active RPCs", self.max_active_rpcs),
             ("message bytes", self.max_message_bytes),
-            ("collect bytes", self.max_collect_bytes),
-            ("batch jobs", self.max_batch_jobs),
             ("stream window", self.stream_window),
             ("variables", self.max_variables),
             ("constraints", self.max_constraints),

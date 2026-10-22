@@ -1,6 +1,17 @@
-"""Build a Pyomo model, then call solve(model) to solve it over gRPC."""
+"""Build a Pyomo model, then call solve(model), or GrpcOptimizer(model).solve() in a loop."""
 
-from .client import AsyncPyomoClient, PyomoClient, solve, solve_async
-from .result import ProtocolError, SolveResult, SolveStatus
+from .client import AsyncGrpcOptimizer, AsyncPyomoClient, GrpcOptimizer, PyomoClient, solve, solve_async
+from .result import JobError, ProtocolError, SolveResult, SolveStatus
 
-__all__ = ["AsyncPyomoClient", "ProtocolError", "PyomoClient", "SolveResult", "SolveStatus", "solve", "solve_async"]
+__all__ = [
+    "AsyncGrpcOptimizer",
+    "AsyncPyomoClient",
+    "GrpcOptimizer",
+    "JobError",
+    "ProtocolError",
+    "PyomoClient",
+    "SolveResult",
+    "SolveStatus",
+    "solve",
+    "solve_async",
+]

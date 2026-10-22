@@ -18,6 +18,7 @@ COPY --from=builder /build/target/release/grpc-optimizer-server /build/target/re
 USER 65532:65532
 ENV OPT_LISTEN_ADDR=0.0.0.0:50051
 EXPOSE 50051
+# Shell form so the probe follows the port in OPT_LISTEN_ADDR.
 HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
-    CMD ["/app/grpc-optimizer-client", "--health", "--endpoint", "http://127.0.0.1:50051"]
+    CMD /app/grpc-optimizer-client --health --endpoint "http://127.0.0.1:${OPT_LISTEN_ADDR##*:}"
 ENTRYPOINT ["/app/grpc-optimizer-server"]

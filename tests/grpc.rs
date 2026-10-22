@@ -5,8 +5,8 @@ use grpc_optimizer::{
     engine::Engine,
     grpc::Service,
     pb::{
-        BatchRequest, JobOutcome, SolveRequest, SolveStatus, job_outcome,
-        optimizer_client::OptimizerClient,
+        BoundOverride, JobOutcome, SessionRequest, SolveInput, SolveRequest, SolveStatus,
+        job_outcome, optimizer_client::OptimizerClient, session_request::Kind,
     },
     samples,
 };
@@ -82,7 +82,7 @@ fn success(outcome: &JobOutcome) {
 }
 
 #[tokio::test]
-async fn all_patterns_solve_and_collect_preserves_submission_order() {
+async fn unary_and_bidi_solve() {
     let mut server = RunningServer::start(Config {
         stream_window: 2,
         ..Config::default()
@@ -95,29 +95,6 @@ async fn all_patterns_solve_and_collect_preserves_submission_order() {
         .unwrap()
         .into_inner();
     assert_eq!(result.status, SolveStatus::Optimal as i32);
-    let mut output = server
-        .client
-        .solve_batch(BatchRequest { jobs: jobs(4) })
-        .await
-        .unwrap()
-        .into_inner();
-    let mut count = 0;
-    while let Some(outcome) = output.message().await.unwrap() {
-        success(&outcome);
-        count += 1;
-    }
-    assert_eq!(count, 4);
-    let response = server
-        .client
-        .collect(tokio_stream::iter(jobs(4)))
-        .await
-        .unwrap()
-        .into_inner();
-    for (i, outcome) in response.outcomes.iter().enumerate() {
-        assert_eq!(outcome.request_id, format!("job-{i}"));
-        success(outcome);
-    }
-    assert_eq!(response.outcomes.len(), 4);
     let mut output = server
         .client
         .solve_stream(tokio_stream::iter(jobs(4)))
@@ -162,7 +139,7 @@ async fn bidi_returns_before_input_closes_and_drains_after_half_close() {
 }
 
 #[tokio::test]
-async fn per_job_errors_do_not_terminate_batch_collect_or_bidi() {
+async fn per_job_errors_do_not_terminate_bidi() {
     let mut server = RunningServer::start(Config::default()).await;
     let mut input = jobs(2);
     input[0].model.as_mut().unwrap().sense = 0;
@@ -175,93 +152,127 @@ async fn per_job_errors_do_not_terminate_batch_collect_or_bidi() {
             .code(),
         Code::InvalidArgument
     );
-    let collected = server
-        .client
-        .collect(tokio_stream::iter(input.clone()))
-        .await
-        .unwrap()
-        .into_inner()
-        .outcomes;
-    let mut batch = server
-        .client
-        .solve_batch(BatchRequest {
-            jobs: input.clone(),
-        })
-        .await
-        .unwrap()
-        .into_inner();
-    let mut batched = Vec::new();
-    while let Some(item) = batch.message().await.unwrap() {
-        batched.push(item);
-    }
     let mut bidi = server
         .client
         .solve_stream(tokio_stream::iter(input))
         .await
         .unwrap()
         .into_inner();
-    let mut streamed = Vec::new();
+    let mut outcomes = Vec::new();
     while let Some(item) = bidi.message().await.unwrap() {
-        streamed.push(item);
+        outcomes.push(item);
     }
-    for outcomes in [collected, batched, streamed] {
-        assert_eq!(outcomes.len(), 2);
-        assert!(outcomes.iter().any(|o| matches!(&o.outcome, Some(job_outcome::Outcome::Error(e)) if e.code == Code::InvalidArgument as i32)));
-        assert!(
-            outcomes
-                .iter()
-                .any(|o| matches!(&o.outcome, Some(job_outcome::Outcome::Result(_))))
-        );
+    assert_eq!(outcomes.len(), 2);
+    assert!(outcomes.iter().any(|o| matches!(&o.outcome, Some(job_outcome::Outcome::Error(e)) if e.code == Code::InvalidArgument as i32)));
+    assert!(
+        outcomes
+            .iter()
+            .any(|o| matches!(&o.outcome, Some(job_outcome::Outcome::Result(_))))
+    );
+}
+
+fn model_message() -> SessionRequest {
+    SessionRequest {
+        kind: samples::fixture("production")
+            .unwrap()
+            .request
+            .model
+            .map(Kind::Model),
+    }
+}
+
+fn input_message(input: SolveInput) -> SessionRequest {
+    SessionRequest {
+        kind: Some(Kind::Input(input)),
+    }
+}
+
+fn input(id: &str) -> SolveInput {
+    SolveInput {
+        request_id: id.into(),
+        ..SolveInput::default()
     }
 }
 
 #[tokio::test]
-async fn finite_job_and_collected_byte_limits_are_enforced() {
-    let mut server = RunningServer::start(Config {
-        max_batch_jobs: 2,
-        stream_window: 2,
-        ..Config::default()
-    })
-    .await;
-    assert_eq!(
-        server
-            .client
-            .solve_batch(BatchRequest { jobs: jobs(3) })
-            .await
-            .unwrap_err()
-            .code(),
-        Code::ResourceExhausted
-    );
-    assert_eq!(
-        server
-            .client
-            .collect(tokio_stream::iter(jobs(3)))
-            .await
-            .unwrap_err()
-            .code(),
-        Code::ResourceExhausted
-    );
-    let mut server = RunningServer::start(Config {
-        max_collect_bytes: 1,
-        ..Config::default()
-    })
-    .await;
-    assert_eq!(
-        server
-            .client
-            .collect(tokio_stream::iter(jobs(1)))
-            .await
-            .unwrap_err()
-            .code(),
-        Code::ResourceExhausted
-    );
-    let response = server
+async fn session_sends_model_once_and_applies_per_job_inputs() {
+    let mut server = RunningServer::start(Config::default()).await;
+    let capped = SolveInput {
+        constraint_bounds: vec![BoundOverride {
+            index: 0,
+            lower: None,
+            upper: Some(50.0),
+        }],
+        ..input("capped")
+    };
+    let invalid = SolveInput {
+        objective_indices: vec![9],
+        objective_values: vec![1.0],
+        ..input("invalid")
+    };
+    let messages = [
+        model_message(),
+        input_message(input("base")),
+        input_message(capped),
+        input_message(invalid),
+        input_message(input("after")),
+    ];
+    let mut output = server
         .client
-        .collect(tokio_stream::empty())
+        .solve_session(tokio_stream::iter(messages))
         .await
         .unwrap()
         .into_inner();
-    assert!(response.outcomes.is_empty());
+    let mut outcomes = std::collections::HashMap::new();
+    while let Some(outcome) = output.message().await.unwrap() {
+        outcomes.insert(outcome.request_id.clone(), outcome);
+    }
+    assert_eq!(outcomes.len(), 4);
+    success(&outcomes["base"]);
+    success(&outcomes["after"]);
+    let Some(job_outcome::Outcome::Result(result)) = &outcomes["capped"].outcome else {
+        panic!("{:?}", outcomes["capped"]);
+    };
+    assert!((result.solution.as_ref().unwrap().objective - 2000.0).abs() < 1e-6);
+    assert!(matches!(
+        &outcomes["invalid"].outcome,
+        Some(job_outcome::Outcome::Error(e)) if e.code == Code::InvalidArgument as i32
+    ));
+}
+
+#[tokio::test]
+async fn session_protocol_violations_terminate_the_call() {
+    let mut server = RunningServer::start(Config::default()).await;
+    let mut bad_model = model_message();
+    if let Some(Kind::Model(model)) = &mut bad_model.kind {
+        model.sense = 0;
+    }
+    let cases = [
+        vec![input_message(input("early"))],
+        vec![model_message(), model_message()],
+        vec![bad_model, input_message(input("a"))],
+        vec![SessionRequest { kind: None }],
+    ];
+    for messages in cases {
+        let error = match server
+            .client
+            .solve_session(tokio_stream::iter(messages))
+            .await
+        {
+            Err(error) => error,
+            Ok(response) => {
+                let mut output = response.into_inner();
+                loop {
+                    match output.message().await {
+                        Ok(Some(_)) => continue,
+                        Ok(None) => panic!("session ended without an error"),
+                        Err(error) => break error,
+                    }
+                }
+            }
+        };
+        assert_eq!(error.code(), Code::InvalidArgument);
+    }
 }
 
 #[tokio::test]
@@ -355,8 +366,12 @@ async fn deadlines_are_enforced_and_invalid_metadata_is_rejected() {
     let (tx, rx) = tokio::sync::mpsc::channel(1);
     let mut request = Request::new(ReceiverStream::new(rx));
     request.set_timeout(Duration::from_millis(30));
+    let error = match server.client.solve_stream(request).await {
+        Ok(response) => response.into_inner().message().await.unwrap_err(),
+        Err(error) => error,
+    };
     assert!(matches!(
-        server.client.collect(request).await.unwrap_err().code(),
+        error.code(),
         Code::DeadlineExceeded | Code::Cancelled
     ));
     drop(tx);

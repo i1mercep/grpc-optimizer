@@ -3,23 +3,23 @@
 [Back to README](../README.md) · [Operations guide](operations.md)
 
 The [protobuf contract](../proto/optimization/v1/optimizer.proto) defines package
-`optimization.v1` and service `Optimizer`. Each job contains a complete,
-independent continuous LP model.
+`optimization.v1` and service `Optimizer`. Jobs carry a complete continuous LP
+model, except in a session, where the model is sent once per call.
 
 ## Choose a call pattern
 
 | CLI mode | RPC | Input | Output |
 | --- | --- | --- | --- |
 | `unary` | `Solve` | One LP | One result |
-| `server-stream` | `SolveBatch` | Bounded batch of LPs | Results in completion order |
-| `client-stream` | `Collect` | Bounded stream of LPs | One response in submission order |
 | `bidi` | `SolveStream` | Open stream of LPs | Results in completion order |
+| `session` | `SolveSession` | One LP, then a stream of input values | Results in completion order |
 
-Use unary for simple request/response, server streaming for early results from a
-finite batch, client streaming for incremental submission with one final response,
-and bidirectional streaming for ongoing submission and early results.
+Use unary for simple request/response, and bidirectional streaming to submit many
+models over one call and receive each result as soon as it is solved. Use a
+session when the model structure stays fixed and only numbers change between
+jobs; each job then sends just those numbers.
 
-All modes reuse HTTP/2 connections; concurrent unary calls can also share one
+Both modes reuse HTTP/2 connections; concurrent unary calls can also share one
 connection. Streaming sends independent models, not chunks of one model. Choose
 the behavior you need and benchmark your workload before assuming a speed gain.
 
@@ -46,6 +46,31 @@ may also contain a description and expected answers.
 Supply request IDs of 1–128 UTF-8 bytes, unique within a call. The server echoes
 IDs but does not track uniqueness across messages, deduplicate, or retry jobs.
 Reusing an ID submits the work again.
+
+## Stream inputs for one model
+
+`SolveSession` streams `SessionRequest` messages. The first must contain the
+`model`; every later message contains a `SolveInput`. To change the model, open
+a new call.
+
+A `SolveInput` has the same `request_id`, `diagnostics`, and
+`time_limit_seconds` fields as a `SolveRequest`, plus sparse overrides that
+apply to that job only:
+
+- `objective_indices` / `objective_values`: parallel arrays of variable indices
+  and new objective coefficients.
+- `variable_bounds`: `BoundOverride` entries replacing a variable's bounds.
+- `constraint_bounds`: `BoundOverride` entries replacing a constraint's bounds
+  (the right-hand side).
+
+Indices are zero-based positions in the session model and may appear once per
+list. A `BoundOverride` replaces both sides; an omitted side means infinity, as
+in the model. Anything not overridden keeps its session-model value. Constraint
+coefficients and the objective sense cannot change within a session.
+
+Results and per-job errors are the same as for `SolveStream`. A bad override
+fails only its job. A missing or invalid model, or a second model, ends the call
+with `INVALID_ARGUMENT` (or `RESOURCE_EXHAUSTED` for model limits).
 
 ## Read a result
 
@@ -75,12 +100,11 @@ Timings exclude networking, encoding, result extraction, and executor scheduling
 | Capacity or size limit | `RESOURCE_EXHAUSTED` |
 | Native execution failure | `INTERNAL` |
 
-`Solve` returns these as RPC errors. Other methods return per-job `JobError`
-outcomes, correlated by request ID, and continue processing other jobs. A
-`JobError.code` is the numeric canonical gRPC status code.
+`Solve` returns these as RPC errors. `SolveStream` and `SolveSession` return
+per-job `JobError` outcomes, correlated by request ID, and continue processing
+other jobs. A `JobError.code` is the numeric canonical gRPC status code.
 
-Transport errors, finite batch overflow, collected response overflow, deadlines,
-and shutdown terminate the whole RPC. `Collect` returns no partial response.
+Transport errors, deadlines, and shutdown terminate the whole RPC.
 
 A client deadline covers the entire RPC, including all messages in a stream.
 Tonic may report an expired call as `CANCELLED` when its transport timeout arrives

@@ -1,4 +1,4 @@
-"""Async examples of all four gRPC patterns. Generate stubs before running."""
+"""Async examples of unary and bidirectional gRPC calls. Generate stubs before running."""
 
 import argparse
 import asyncio
@@ -16,7 +16,7 @@ from grpc_optimizer._generated.optimization.v1 import optimizer_pb2 as pb
 from grpc_optimizer._generated.optimization.v1 import optimizer_pb2_grpc as rpc
 
 ROOT = Path(__file__).resolve().parents[2]
-MODES = ("unary", "server-stream", "client-stream", "bidi")
+MODES = ("unary", "bidi")
 
 
 def load_jobs(
@@ -44,7 +44,7 @@ async def outcomes(
     jobs: Sequence[pb.SolveRequest],
     rpc_timeout: float,
 ) -> AsyncIterator[pb.JobOutcome]:
-    """Yield uniform job outcomes for any RPC mode, wrapping unary results.
+    """Yield uniform job outcomes for either RPC mode, wrapping unary results.
 
     Bidirectional mode sends concurrently with receiving and cancels both the
     call and its producer when iteration exits.
@@ -53,20 +53,6 @@ async def outcomes(
         for job in jobs:
             result = await stub.Solve(job, timeout=rpc_timeout)
             yield pb.JobOutcome(request_id=result.request_id, result=result)
-    elif mode == "server-stream":
-        async for outcome in stub.SolveBatch(pb.BatchRequest(jobs=jobs), timeout=rpc_timeout):
-            yield outcome
-    elif mode == "client-stream":
-
-        async def requests() -> AsyncIterator[pb.SolveRequest]:
-            """Stream jobs while yielding control to the event loop between requests."""
-            for job in jobs:
-                yield job
-                await asyncio.sleep(0)
-
-        response = await stub.Collect(requests(), timeout=rpc_timeout)
-        for outcome in response.outcomes:
-            yield outcome
     else:
         call = stub.SolveStream(timeout=rpc_timeout)
 

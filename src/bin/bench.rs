@@ -12,8 +12,8 @@ use grpc_optimizer::{
     config::Config,
     engine::Engine,
     pb::{
-        BatchRequest, ExecutionSettings, JobOutcome, SolveRequest, SolveResult, SolveStatus,
-        job_outcome, optimizer_client::OptimizerClient,
+        ExecutionSettings, JobOutcome, SolveRequest, SolveResult, SolveStatus, job_outcome,
+        optimizer_client::OptimizerClient,
     },
     samples::{self, Family},
 };
@@ -30,8 +30,6 @@ use tonic::{
 enum Mode {
     Direct,
     Unary,
-    ServerStream,
-    ClientStream,
     Bidi,
     All,
 }
@@ -121,9 +119,9 @@ fn timed<T>(value: T, seconds: u64) -> Request<T> {
 
 /// Measures one mode, retaining a measurement for every input even if an RPC fails.
 ///
-/// Direct/unary latency starts at job execution; batch/collect latency starts at chunk
-/// submission; bidi latency starts after a window slot is acquired. `All` must be
-/// expanded by the caller, and every remote mode requires `client` to be present.
+/// Direct/unary latency starts at job execution; bidi latency starts after a window
+/// slot is acquired. `All` must be expanded by the caller, and every remote mode
+/// requires `client` to be present.
 async fn run(
     mode: Mode,
     input: Vec<SolveRequest>,
@@ -163,58 +161,6 @@ async fn run(
                 .buffer_unordered(args.concurrency)
                 .collect()
                 .await
-        }
-        Mode::ServerStream | Mode::ClientStream => {
-            let mut measurements = Vec::with_capacity(input.len());
-            let mut client = client.expect("remote client").clone();
-            for chunk in input.chunks(args.concurrency.min(64)) {
-                let jobs = chunk.to_vec();
-                let start = Instant::now();
-                let mut received = 0;
-                let mut terminal_error = "stream ended before all results arrived".to_owned();
-                if matches!(mode, Mode::ServerStream) {
-                    match client
-                        .solve_batch(timed(BatchRequest { jobs }, args.deadline_seconds))
-                        .await
-                    {
-                        Ok(response) => {
-                            let mut output = response.into_inner();
-                            loop {
-                                match output.message().await {
-                                    Ok(Some(outcome)) => {
-                                        measurements
-                                            .push(Measurement::result(start, unpack(outcome)));
-                                        received += 1;
-                                    }
-                                    Ok(None) => break,
-                                    Err(error) => {
-                                        terminal_error = error.to_string();
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        Err(error) => terminal_error = error.to_string(),
-                    }
-                } else {
-                    match client
-                        .collect(timed(tokio_stream::iter(jobs), args.deadline_seconds))
-                        .await
-                    {
-                        Ok(response) => {
-                            for outcome in response.into_inner().outcomes {
-                                measurements.push(Measurement::result(start, unpack(outcome)));
-                                received += 1;
-                            }
-                        }
-                        Err(error) => terminal_error = error.to_string(),
-                    }
-                }
-                for _ in received..chunk.len() {
-                    measurements.push(Measurement::result(start, Err(terminal_error.clone())));
-                }
-            }
-            measurements
         }
         Mode::Bidi => {
             // Correlation retains each slot until its response arrives, bounding in-flight jobs.
@@ -333,13 +279,7 @@ async fn main() -> anyhow::Result<()> {
         0.0
     };
     let modes = if matches!(args.mode, Mode::All) {
-        vec![
-            Mode::Direct,
-            Mode::Unary,
-            Mode::ServerStream,
-            Mode::ClientStream,
-            Mode::Bidi,
-        ]
+        vec![Mode::Direct, Mode::Unary, Mode::Bidi]
     } else {
         vec![args.mode]
     };

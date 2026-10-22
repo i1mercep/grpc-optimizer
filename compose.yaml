@@ -1,0 +1,18 @@
+# Self-hosted deployment: `docker compose up -d`.
+# Server settings come from an optional .env (see .env.example and docs/operations.md).
+services:
+  optimizer:
+    image: ${OPT_DOCKER_IMAGE:-ghcr.io/i1mercep/grpc-optimizer:latest}
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      OPT_LISTEN_ADDR: 0.0.0.0:50051
+    ports:
+      - ${OPT_DOCKER_PUBLISH:-127.0.0.1:50051:50051}
+    # Shutdown drains admitted solves, which may run up to OPT_MAX_TIME_LIMIT_SECONDS.
+    stop_grace_period: 330s
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]

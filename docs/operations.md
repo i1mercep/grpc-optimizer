@@ -16,8 +16,6 @@ taking precedence. Directly launched binaries do not load `.env`.
 | `OPT_MAX_CONCURRENT_SOLVES` | CPU budget / threads | Global simultaneous solves |
 | `OPT_MAX_ACTIVE_RPCS` | `32` | Admitted optimization RPCs |
 | `OPT_MAX_MESSAGE_BYTES` | `16777216` (16 MiB) | Protobuf message size limit |
-| `OPT_MAX_COLLECT_BYTES` | `16777216` (16 MiB) | Collected response size limit |
-| `OPT_MAX_BATCH_JOBS` | `64` | Jobs per finite batch |
 | `OPT_STREAM_WINDOW` | `8` | Outstanding jobs per stream |
 | `OPT_DEFAULT_TIME_LIMIT_SECONDS` | `30` | Default solver time budget |
 | `OPT_MAX_TIME_LIMIT_SECONDS` | `300` | Maximum solver time budget |
@@ -53,7 +51,7 @@ configured maximum and the remaining RPC deadline after model construction.
 
 The server checks cancellation before native solving and after result extraction.
 During simplex and interior-point solving, interrupt callbacks check for client
-disconnects and expired deadlines in all four RPC modes. Terminating a stream
+disconnects and expired deadlines in both RPC modes. Terminating a stream
 also cancels its unfinished jobs.
 
 Interruption is cooperative. Presolve, factorization, and native work between
@@ -67,11 +65,21 @@ receive cancellation; active unary solves can finish normally.
 
 ## Deployment
 
-See the [Docker quick start](../README.md#run-with-docker) for image and container
-commands. The runtime runs as a non-root user and includes a gRPC health probe.
-If you change the listen port, update the container health command as well.
-The service supports standard gRPC health checks for `optimization.v1.Optimizer`
-and v1 reflection.
+See the [Docker quick start](../README.md#with-docker) for image and container
+commands. The runtime runs as a non-root user and includes a gRPC health probe
+that follows the port in `OPT_LISTEN_ADDR`. The service supports standard gRPC
+health checks for `optimization.v1.Optimizer` and v1 reflection.
+
+The default CPU budget follows the container's CPU quota, so `--cpus` (or
+Compose `cpus`) is usually enough. Shutdown waits for admitted solves, which can
+run up to `OPT_MAX_TIME_LIMIT_SECONDS`; give `docker stop -t` or Kubernetes
+`terminationGracePeriodSeconds` at least that long.
+
+The [image workflow](../.github/workflows/docker.yml) builds `amd64` and `arm64`
+natively, smoke-tests each (health, solve, graceful exit), and on `main` pushes or published
+GitHub releases publishes a multi-platform manifest to GHCR with SBOM and provenance.
+Pull requests build and test without publishing. GHCR packages start private;
+make the package public in its GitHub settings for anonymous pulls.
 
 Local defaults use loopback and plaintext. Use a private network or terminate TLS
 and authentication at a gRPC-capable ingress. The service has no built-in
@@ -98,8 +106,8 @@ just bench --family transportation --size 100 --jobs 20 --concurrency 1
 
 The default concurrency is one, which works on a one-CPU host. Increase it only
 with enough server capacity. For example, use `--concurrency 4` with at least four
-available solve slots. The default mode compares direct solving and all four RPC
-modes; use `just bench --help` for options.
+available solve slots. The default mode compares direct solving, unary, and
+bidirectional calls; use `just bench --help` for options.
 
 Direct mode runs without a server:
 
@@ -113,11 +121,9 @@ All modes solve identical seeded inputs:
 | --- | --- |
 | Direct | In-process validation/engine/solver path, without network serialization |
 | Unary | Concurrent calls using cloned stubs on one channel |
-| Server/client streaming | Batches up to the selected concurrency (capped at 64); latency starts at batch submission |
 | Bidirectional | One stream with a bounded outstanding window; latency starts once a slot is available |
 
-`Collect` latency includes waiting for the complete batch. A bidirectional deadline
-covers the entire measured stream.
+A bidirectional deadline covers the entire measured stream.
 
 Each JSON report includes dimensions, seed, concurrency, actual execution settings,
 connection setup, per-mode warm-up, throughput, p50/p95/p99 job latency, server
@@ -149,4 +155,4 @@ and uses one package with one solver backend.
 
 Lifecycle tests synchronize with simplex/interior-point callbacks before
 cancelling or expiring solves. Loopback tests cover disconnects and deadlines in
-all four RPC modes, permit retention until native exit, and capacity recovery.
+both RPC modes, permit retention until native exit, and capacity recovery.

@@ -3,12 +3,19 @@
 import asyncio
 import math
 import os
-from collections.abc import AsyncIterator
 
 import pyomo.environ as pyo
 
 from client import MODES, ROOT, grpc, load_jobs, outcomes, pb, rpc
-from grpc_optimizer import AsyncPyomoClient, PyomoClient, SolveStatus, solve, solve_async
+from grpc_optimizer import (
+    AsyncGrpcOptimizer,
+    AsyncPyomoClient,
+    GrpcOptimizer,
+    PyomoClient,
+    SolveStatus,
+    solve,
+    solve_async,
+)
 from pyomo_client import build_model
 
 
@@ -54,12 +61,42 @@ async def check_pyomo(target: str) -> None:
     await asyncio.to_thread(check_sync_reuse)
 
 
+def session_model():
+    """Build the production LP with machine hours as a mutable parameter."""
+    model = build_model()
+    model.hours = pyo.Param(initialize=100, mutable=True)
+    model.machine.set_value(model.x + model.y <= model.hours)
+    return model
+
+
+async def check_optimizer(target: str) -> None:
+    """Check that sync and async optimizers apply changed values to the live server's model."""
+
+    def run_sync():
+        model = session_model()
+        with GrpcOptimizer(model, target, timeout=10) as optimizer:
+            assert math.isclose(optimizer.solve().objective or 0, 3600, abs_tol=1e-6)
+            model.hours = 50
+            result = optimizer.solve()
+            assert result.is_optimal and math.isclose(result.objective or 0, 2000, abs_tol=1e-6), result
+            assert math.isclose(pyo.value(model.x), 50, abs_tol=1e-6)
+
+    await asyncio.to_thread(run_sync)
+    model = session_model()
+    async with AsyncGrpcOptimizer(model, target, timeout=10) as optimizer:
+        model.hours = 50
+        assert math.isclose((await optimizer.solve()).objective or 0, 2000, abs_tol=1e-6)
+        model.hours = 100
+        assert math.isclose((await optimizer.solve()).objective or 0, 3600, abs_tol=1e-6)
+
+
 async def main() -> None:
     """Verify Pyomo APIs, fixture results, streaming errors, and deadlines against a live server."""
     target = os.environ.get("OPT_GRPC_TARGET", "127.0.0.1:50051")
     async with grpc.aio.insecure_channel(target) as channel:
         await asyncio.wait_for(channel.channel_ready(), 10)
         await check_pyomo(target)
+        await check_optimizer(target)
         stub = rpc.OptimizerStub(channel)
         for path in sorted((ROOT / "examples/models").glob("*.json")):
             sample, jobs = load_jobs(path, 2, diagnostics=True)
@@ -95,15 +132,10 @@ async def main() -> None:
         await call.done_writing()
         assert await call.read() is grpc.aio.EOF
 
-        async def blocked_requests() -> AsyncIterator[pb.SolveRequest]:
-            """Keep the request stream open without sending jobs to force a deadline expiry."""
-            # A tiny solve may beat the client's rounded timeout. Keep the
-            # request open instead, so deadline enforcement is deterministic.
-            await asyncio.Event().wait()
-            yield jobs[0]
-
+        # An open request side with no jobs makes deadline expiry deterministic.
+        call = stub.SolveStream(timeout=0.03)
         try:
-            await stub.Collect(blocked_requests(), timeout=0.03)
+            await call.read()
         except grpc.aio.AioRpcError as error:
             assert error.code() in (
                 grpc.StatusCode.DEADLINE_EXCEEDED,
@@ -111,7 +143,7 @@ async def main() -> None:
             )
         else:
             raise AssertionError("expired call unexpectedly succeeded")
-    print("Python interoperability: Pyomo, all fixtures and four RPC patterns passed")
+    print("Python interoperability: Pyomo, sessions, all fixtures, unary and bidi passed")
 
 
 if __name__ == "__main__":

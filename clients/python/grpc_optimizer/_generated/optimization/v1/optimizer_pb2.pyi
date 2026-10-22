@@ -83,6 +83,42 @@ class SolveRequest(_message.Message):
     time_limit_seconds: float
     def __init__(self, request_id: _Optional[str] = ..., model: _Optional[_Union[LinearProgram, _Mapping]] = ..., diagnostics: _Optional[bool] = ..., time_limit_seconds: _Optional[float] = ...) -> None: ...
 
+class SessionRequest(_message.Message):
+    __slots__ = ("model", "input")
+    MODEL_FIELD_NUMBER: _ClassVar[int]
+    INPUT_FIELD_NUMBER: _ClassVar[int]
+    model: LinearProgram
+    input: SolveInput
+    def __init__(self, model: _Optional[_Union[LinearProgram, _Mapping]] = ..., input: _Optional[_Union[SolveInput, _Mapping]] = ...) -> None: ...
+
+class BoundOverride(_message.Message):
+    __slots__ = ("index", "lower", "upper")
+    INDEX_FIELD_NUMBER: _ClassVar[int]
+    LOWER_FIELD_NUMBER: _ClassVar[int]
+    UPPER_FIELD_NUMBER: _ClassVar[int]
+    index: int
+    lower: float
+    upper: float
+    def __init__(self, index: _Optional[int] = ..., lower: _Optional[float] = ..., upper: _Optional[float] = ...) -> None: ...
+
+class SolveInput(_message.Message):
+    __slots__ = ("request_id", "diagnostics", "time_limit_seconds", "objective_indices", "objective_values", "variable_bounds", "constraint_bounds")
+    REQUEST_ID_FIELD_NUMBER: _ClassVar[int]
+    DIAGNOSTICS_FIELD_NUMBER: _ClassVar[int]
+    TIME_LIMIT_SECONDS_FIELD_NUMBER: _ClassVar[int]
+    OBJECTIVE_INDICES_FIELD_NUMBER: _ClassVar[int]
+    OBJECTIVE_VALUES_FIELD_NUMBER: _ClassVar[int]
+    VARIABLE_BOUNDS_FIELD_NUMBER: _ClassVar[int]
+    CONSTRAINT_BOUNDS_FIELD_NUMBER: _ClassVar[int]
+    request_id: str
+    diagnostics: bool
+    time_limit_seconds: float
+    objective_indices: _containers.RepeatedScalarFieldContainer[int]
+    objective_values: _containers.RepeatedScalarFieldContainer[float]
+    variable_bounds: _containers.RepeatedCompositeFieldContainer[BoundOverride]
+    constraint_bounds: _containers.RepeatedCompositeFieldContainer[BoundOverride]
+    def __init__(self, request_id: _Optional[str] = ..., diagnostics: _Optional[bool] = ..., time_limit_seconds: _Optional[float] = ..., objective_indices: _Optional[_Iterable[int]] = ..., objective_values: _Optional[_Iterable[float]] = ..., variable_bounds: _Optional[_Iterable[_Union[BoundOverride, _Mapping]]] = ..., constraint_bounds: _Optional[_Iterable[_Union[BoundOverride, _Mapping]]] = ...) -> None: ...
+
 class Solution(_message.Message):
     __slots__ = ("objective", "variable_values", "constraint_activities", "dual")
     OBJECTIVE_FIELD_NUMBER: _ClassVar[int]
@@ -156,15 +192,3 @@ class JobOutcome(_message.Message):
     result: SolveResult
     error: JobError
     def __init__(self, request_id: _Optional[str] = ..., result: _Optional[_Union[SolveResult, _Mapping]] = ..., error: _Optional[_Union[JobError, _Mapping]] = ...) -> None: ...
-
-class BatchRequest(_message.Message):
-    __slots__ = ("jobs",)
-    JOBS_FIELD_NUMBER: _ClassVar[int]
-    jobs: _containers.RepeatedCompositeFieldContainer[SolveRequest]
-    def __init__(self, jobs: _Optional[_Iterable[_Union[SolveRequest, _Mapping]]] = ...) -> None: ...
-
-class BatchResponse(_message.Message):
-    __slots__ = ("outcomes",)
-    OUTCOMES_FIELD_NUMBER: _ClassVar[int]
-    outcomes: _containers.RepeatedCompositeFieldContainer[JobOutcome]
-    def __init__(self, outcomes: _Optional[_Iterable[_Union[JobOutcome, _Mapping]]] = ...) -> None: ...

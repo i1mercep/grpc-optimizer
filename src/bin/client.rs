@@ -1,10 +1,13 @@
-//! Example client for all RPC modes, fixture export, and service health checks.
+//! Example client for unary, bidirectional, and session RPCs, fixture export, and health checks.
 
 use std::{path::PathBuf, time::Duration};
 
 use clap::{Parser, ValueEnum};
 use grpc_optimizer::{
-    pb::{BatchRequest, JobOutcome, SolveRequest, job_outcome, optimizer_client::OptimizerClient},
+    pb::{
+        JobOutcome, SessionRequest, SolveInput, SolveRequest, job_outcome,
+        optimizer_client::OptimizerClient, session_request,
+    },
     samples::{self, Family},
 };
 use tokio_stream::wrappers::ReceiverStream;
@@ -13,9 +16,9 @@ use tonic::{Request, transport::Endpoint};
 #[derive(Clone, Copy, ValueEnum)]
 enum Mode {
     Unary,
-    ServerStream,
-    ClientStream,
     Bidi,
+    /// Send the model once, then only per-job inputs.
+    Session,
 }
 
 #[derive(Parser)]
@@ -41,7 +44,8 @@ struct Args {
     diagnostics: bool,
     #[arg(long, default_value_t = 30.0)]
     deadline: f64,
-    /// Set the first job's sense to UNSPECIFIED to demonstrate per-job errors.
+    /// Make the first job invalid to demonstrate per-job errors: UNSPECIFIED sense,
+    /// or an out-of-range objective index in session mode.
     #[arg(long)]
     invalid_first: bool,
     /// Export a generated model as the shared fixture format, without connecting.
@@ -141,24 +145,6 @@ async fn main() -> anyhow::Result<()> {
                 println!("{}", serde_json::to_string(&result)?);
             }
         }
-        Mode::ServerStream => {
-            let mut stream = client
-                .solve_batch(timed(BatchRequest { jobs }, args.deadline))
-                .await?
-                .into_inner();
-            while let Some(outcome) = stream.message().await? {
-                print_outcome(&outcome)?;
-            }
-        }
-        Mode::ClientStream => {
-            let response = client
-                .collect(timed(tokio_stream::iter(jobs), args.deadline))
-                .await?
-                .into_inner();
-            for outcome in response.outcomes {
-                print_outcome(&outcome)?;
-            }
-        }
         Mode::Bidi => {
             let (tx, rx) = tokio::sync::mpsc::channel(8);
             let producer = tokio::spawn(async move {
@@ -177,6 +163,35 @@ async fn main() -> anyhow::Result<()> {
                 print_outcome(&outcome)?;
             }
             producer.await?;
+        }
+        Mode::Session => {
+            let model = sample.request.model.clone();
+            let first = SessionRequest {
+                kind: model.map(session_request::Kind::Model),
+            };
+            let inputs = jobs.into_iter().enumerate().map(|(i, job)| {
+                let mut input = SolveInput {
+                    request_id: job.request_id,
+                    diagnostics: job.diagnostics,
+                    time_limit_seconds: job.time_limit_seconds,
+                    ..SolveInput::default()
+                };
+                if args.invalid_first && i == 0 {
+                    input.objective_indices.push(u32::MAX);
+                    input.objective_values.push(0.0);
+                }
+                SessionRequest {
+                    kind: Some(session_request::Kind::Input(input)),
+                }
+            });
+            let messages: Vec<_> = std::iter::once(first).chain(inputs).collect();
+            let mut stream = client
+                .solve_session(timed(tokio_stream::iter(messages), args.deadline))
+                .await?
+                .into_inner();
+            while let Some(outcome) = stream.message().await? {
+                print_outcome(&outcome)?;
+            }
         }
     }
     Ok(())
