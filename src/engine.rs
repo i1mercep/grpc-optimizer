@@ -10,8 +10,29 @@ use crate::{
     config::Config,
     model::{Error, Result},
     pb::{SolveRequest, SolveResult},
-    solver,
+    solver::{self, WarmModel},
 };
+
+/// Session handle for one reusable native model. Empty until a solve stores one.
+///
+/// Transport owns the handle; the solver owns the instance behind it.
+#[derive(Clone)]
+pub(crate) struct WarmSlot(Arc<WarmModel>);
+
+impl WarmSlot {
+    /// Creates an empty slot shared by every job in one session.
+    pub(crate) fn new() -> Self {
+        Self(Arc::new(WarmModel::default()))
+    }
+}
+
+impl std::ops::Deref for WarmSlot {
+    type Target = WarmModel;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 /// Coordinates RPC and native-worker capacity across all clones.
 ///
@@ -87,6 +108,17 @@ impl Engine {
         deadline: Option<Instant>,
         cancel: CancellationToken,
     ) -> Result<SolveResult> {
+        self.solve_warm(request, None, deadline, cancel).await
+    }
+
+    /// Like [`Self::solve`], but re-solves `warm` when that slot holds a free model.
+    pub(crate) async fn solve_warm(
+        &self,
+        request: SolveRequest,
+        warm: Option<WarmSlot>,
+        deadline: Option<Instant>,
+        cancel: CancellationToken,
+    ) -> Result<SolveResult> {
         // Dropping one solve must interrupt its worker without cancelling sibling
         // jobs that share the RPC's parent token.
         let cancel = cancel.child_token();
@@ -107,6 +139,7 @@ impl Engine {
                 &config,
                 deadline,
                 &cancel,
+                warm.as_deref(),
                 #[cfg(test)]
                 test_control,
             )

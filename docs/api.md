@@ -72,6 +72,11 @@ Results and per-job errors are the same as for `SolveStream`. A bad override
 fails only its job. A missing or invalid model, or a second model, ends the call
 with `INVALID_ARGUMENT` (or `RESOURCE_EXHAUSTED` for model limits).
 
+A session keeps its last native model warm. The next job updates costs and bounds
+and re-solves, from the previous basis when that model was already solved, instead
+of rebuilding. Overlapping jobs use a fresh model. A warm solve may pick a different
+optimum among equally good solutions than a fresh `Solve`; status and objective match.
+
 ## Read a result
 
 RPC success means a result was delivered. Check `SolveResult.status` to determine

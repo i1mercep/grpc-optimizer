@@ -30,10 +30,25 @@ struct Callback {
 
 /// Keeps callback state alive through solution reads and native model destruction.
 pub(super) struct Solved {
-    // Fields drop in declaration order: destroy HiGHS (and its registration)
-    // before freeing the callback state. Do not expose ownership of `native`.
+    // Fields drop in declaration order: destroy HiGHS before freeing the callback
+    // state. `into_model` detaches that callback, then releases `native`.
     native: SolvedModel,
     _callback: Box<Callback>,
+}
+
+impl Solved {
+    /// Detaches the interrupt callback so the model can outlive this state.
+    ///
+    /// Stopping a callback leaves HiGHS holding the user pointer. Clearing it is
+    /// what makes the pointer safe to free.
+    pub(super) fn into_model(self) -> Result<Model> {
+        let mut native = Model::from(self.native);
+        // SAFETY: the model is exclusively owned and this callback state is still
+        // alive. `Highs_setCallback` drops HiGHS's copy of that pointer before return.
+        let status = unsafe { Highs_setCallback(native.as_mut_ptr(), None, std::ptr::null_mut()) };
+        check_status(status, "clear interrupt callback")?;
+        Ok(native)
+    }
 }
 
 impl Deref for Solved {

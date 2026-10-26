@@ -17,7 +17,7 @@ use tokio_util::sync::{CancellationToken, DropGuard};
 use tonic::{Code, Request, Response, Status};
 
 use crate::{
-    engine::Engine,
+    engine::{Engine, WarmSlot},
     model::{self, Error},
     pb::{
         JobError, JobOutcome, LinearProgram, SessionRequest, SolveRequest, SolveResult,
@@ -31,6 +31,7 @@ use crate::{
 struct Job {
     request_id: String,
     request: model::Result<SolveRequest>,
+    warm: Option<WarmSlot>,
 }
 
 impl From<SolveRequest> for Job {
@@ -38,11 +39,13 @@ impl From<SolveRequest> for Job {
         Self {
             request_id: request.request_id.clone(),
             request: Ok(request),
+            warm: None,
         }
     }
 }
 
-/// Validates the leading session model once, then expands each input into a job.
+/// Validates the leading session model once, then expands each input into a job
+/// that shares the session's warm model.
 ///
 /// Protocol violations and an invalid model terminate the stream; bad overrides
 /// become per-job errors.
@@ -50,7 +53,7 @@ fn session_jobs(
     input: BoxStream<'static, Result<SessionRequest, Status>>,
     engine: Engine,
 ) -> BoxStream<'static, Result<Job, Status>> {
-    let mut base: Option<LinearProgram> = None;
+    let mut base: Option<(LinearProgram, WarmSlot)> = None;
     input
         .filter_map(move |item| {
             let job = item.and_then(|message| match message.kind {
@@ -60,16 +63,17 @@ fn session_jobs(
                 ),
                 Some(session_request::Kind::Model(model)) => {
                     model::validate_model(&model, &engine.config).map_err(to_status)?;
-                    base = Some(model);
+                    base = Some((model, WarmSlot::new()));
                     Ok(None)
                 }
                 Some(session_request::Kind::Input(input)) => {
-                    let base = base.as_ref().ok_or_else(|| {
+                    let (base, warm) = base.as_ref().ok_or_else(|| {
                         Status::invalid_argument("first session message must contain the model")
                     })?;
                     Ok(Some(Job {
                         request_id: input.request_id.clone(),
                         request: model::apply(base, input),
+                        warm: Some(warm.clone()),
                     }))
                 }
             });
@@ -144,7 +148,7 @@ impl Service {
                     let (job, permit) = item?;
                     let request_id = job.request_id;
                     let solved = match job.request {
-                        Ok(request) => engine.solve(request, deadline, cancel).await,
+                        Ok(request) => engine.solve_warm(request, job.warm, deadline, cancel).await,
                         Err(error) => Err(error),
                     };
                     let outcome = match solved.and_then(|result| {

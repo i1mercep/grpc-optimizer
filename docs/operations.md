@@ -85,6 +85,10 @@ Local defaults use loopback and plaintext. Use a private network or terminate TL
 and authentication at a gRPC-capable ingress. The service has no built-in
 authentication.
 
+Logs are JSON lines on stdout, written by a background thread; if stdout stalls,
+lines are dropped rather than delaying solves. Per-solve timings are `debug`
+events and are always returned in each result.
+
 Replicas share no state. An established stream stays on one replica; distributing
 load may require multiple channels or client/load-balancer support for routing
 new RPCs. Results are not durable, and disconnected jobs cannot be resumed.
@@ -149,9 +153,10 @@ universal latency or streaming speed advantage.
 
 Generated protobuf types form the shared data contract. Each native solver
 instance is created, solved, and destroyed in a blocking worker, while Tokio
-handles network I/O. A global semaphore is acquired before spawning native work
-to avoid an unbounded blocking queue. The service needs no database or broker
-and uses one package with one solver backend.
+handles network I/O. A session keeps its last instance for the next job. A
+global semaphore is acquired before spawning native work to avoid an unbounded
+blocking queue. The service needs no database or broker and uses one package
+with one solver backend.
 
 Lifecycle tests synchronize with simplex/interior-point callbacks before
 cancelling or expiring solves. Loopback tests cover disconnects and deadlines in

@@ -2,19 +2,24 @@
 
 use std::{ops::Bound, time::Instant};
 
-use highs::{HighsModelStatus, HighsSolutionStatus, RowProblem, Sense};
+use highs::{HighsModelStatus, HighsSolutionStatus, Model, RowProblem, Sense};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     config::Config,
     model::{self, Error, Result},
-    pb::{DualSolution, ObjectiveSense, Solution, SolveRequest, SolveResult, SolveStatus, Timings},
+    pb::{
+        DualSolution, LinearProgram, ObjectiveSense, Solution, SolveRequest, SolveResult,
+        SolveStatus, Timings,
+    },
 };
 
 mod interrupt;
+mod warm;
 
 #[cfg(test)]
 pub(crate) use interrupt::TestControl;
+pub(crate) use warm::WarmModel;
 
 /// Validates and solves one continuous LP on the calling thread.
 ///
@@ -33,6 +38,7 @@ pub fn solve(
         config,
         deadline,
         cancel,
+        None,
         #[cfg(test)]
         None,
     )
@@ -40,11 +46,14 @@ pub fn solve(
 
 /// Runs validation, model construction, solving, and extraction with separate timings.
 /// Only a feasible primal solution is returned; duals also require dual feasibility.
+/// With `warm`, reuses a free model of the same shape and stores the solved model.
+/// A model taken but never solved is put back when the slot is still empty.
 pub(crate) fn solve_inner(
     request: SolveRequest,
     config: &Config,
     deadline: Option<Instant>,
     cancel: &CancellationToken,
+    warm: Option<&WarmModel>,
     #[cfg(test)] test_control: Option<std::sync::Arc<TestControl>>,
 ) -> Result<SolveResult> {
     check_budget(deadline, cancel)?;
@@ -53,6 +62,109 @@ pub(crate) fn solve_inner(
     let validation_seconds = start.elapsed().as_secs_f64();
     let build_start = Instant::now();
     let input = request.model.as_ref().expect("validated model");
+    let model = match warm.and_then(warm::take) {
+        Some(reused) if reused.compatible(input) => reused.refresh(input)?,
+        Some(rejected) => {
+            drop(rejected);
+            tracing::warn!(
+                request_id = %request.request_id,
+                "warm model structure mismatch; rebuilding"
+            );
+            build(input, config)?
+        }
+        None => build(input, config)?,
+    };
+    // Drop restores the model if a later budget check fails before solve takes it.
+    let mut prepared = warm::Guard::hold(warm, model);
+    check_budget(deadline, cancel)?;
+    let mut budget = request
+        .time_limit_seconds
+        .unwrap_or(config.default_time_limit_seconds)
+        .min(config.max_time_limit_seconds);
+    if let Some(deadline) = deadline {
+        budget = budget.min(
+            deadline
+                .saturating_duration_since(Instant::now())
+                .as_secs_f64(),
+        );
+    }
+    if budget <= 0.0 {
+        return Err(Error::Deadline);
+    }
+    prepared
+        .model_mut()
+        .try_set_option("time_limit", budget)
+        .map_err(|e| Error::Internal(format!("HiGHS time limit: {e:?}")))?;
+    let build_seconds = build_start.elapsed().as_secs_f64();
+    let solve_start = Instant::now();
+    let solved = interrupt::solve(
+        prepared.take(),
+        cancel,
+        deadline,
+        #[cfg(test)]
+        test_control,
+    )?;
+    let solve_seconds = solve_start.elapsed().as_secs_f64();
+    let native_status = solved.status();
+    let status = status(native_status)?;
+    let solution = if solved.primal_solution_status() == HighsSolutionStatus::Feasible {
+        let values = solved.get_solution();
+        let dual_feasible = solved
+            .int_info_value(c"dual_solution_status")
+            .map_err(|s| Error::Internal(format!("HiGHS dual status: {s:?}")))?
+            == HighsSolutionStatus::Feasible as i64;
+        Some(Solution {
+            objective: solved.objective_value(),
+            variable_values: values.columns().to_vec(),
+            constraint_activities: if request.diagnostics {
+                values.rows().to_vec()
+            } else {
+                Vec::new()
+            },
+            dual: (request.diagnostics && dual_feasible).then(|| DualSolution {
+                constraint_duals: values.dual_rows().to_vec(),
+                reduced_costs: values.dual_columns().to_vec(),
+            }),
+        })
+    } else {
+        None
+    };
+    check_budget(deadline, cancel)?;
+    tracing::debug!(request_id = %request.request_id, ?status, validation_seconds, build_seconds, solve_seconds, "optimization completed");
+    let result = SolveResult {
+        request_id: request.request_id,
+        status: status as i32,
+        solution,
+        timings: Some(Timings {
+            validation_seconds,
+            build_seconds,
+            solve_seconds,
+        }),
+        solver_status: format!("{native_status:?}"),
+        execution: Some(crate::pb::ExecutionSettings {
+            cpu_budget: config.cpu_budget as u32,
+            solver_threads: config.solver_threads as u32,
+            max_concurrent_solves: config.max_concurrent_solves as u32,
+        }),
+    };
+    if let Some(slot) = warm {
+        match solved.into_model() {
+            Ok(model) => warm::store(slot, model),
+            Err(error) => {
+                // Do not clear the slot: a sibling job may have stored a newer model.
+                tracing::warn!(
+                    request_id = %result.request_id,
+                    %error,
+                    "discarding warm model after failed callback detach"
+                );
+            }
+        }
+    }
+    Ok(result)
+}
+
+/// Builds a quiet native model with the configured thread settings.
+fn build(input: &LinearProgram, config: &Config) -> Result<Model> {
     let mut problem = RowProblem::new();
     let columns: Vec<_> = input
         .variables
@@ -90,76 +202,7 @@ pub(crate) fn solve_inner(
             },
         )
         .map_err(|e| Error::Internal(format!("HiGHS parallel: {e:?}")))?;
-    check_budget(deadline, cancel)?;
-    let mut budget = request
-        .time_limit_seconds
-        .unwrap_or(config.default_time_limit_seconds)
-        .min(config.max_time_limit_seconds);
-    if let Some(deadline) = deadline {
-        budget = budget.min(
-            deadline
-                .saturating_duration_since(Instant::now())
-                .as_secs_f64(),
-        );
-    }
-    if budget <= 0.0 {
-        return Err(Error::Deadline);
-    }
-    native
-        .try_set_option("time_limit", budget)
-        .map_err(|e| Error::Internal(format!("HiGHS time limit: {e:?}")))?;
-    let build_seconds = build_start.elapsed().as_secs_f64();
-    let solve_start = Instant::now();
-    let solved = interrupt::solve(
-        native,
-        cancel,
-        deadline,
-        #[cfg(test)]
-        test_control,
-    )?;
-    let solve_seconds = solve_start.elapsed().as_secs_f64();
-    let native_status = solved.status();
-    let status = status(native_status)?;
-    let solution = if solved.primal_solution_status() == HighsSolutionStatus::Feasible {
-        let values = solved.get_solution();
-        let dual_feasible = solved
-            .int_info_value(c"dual_solution_status")
-            .map_err(|s| Error::Internal(format!("HiGHS dual status: {s:?}")))?
-            == HighsSolutionStatus::Feasible as i64;
-        Some(Solution {
-            objective: solved.objective_value(),
-            variable_values: values.columns().to_vec(),
-            constraint_activities: if request.diagnostics {
-                values.rows().to_vec()
-            } else {
-                Vec::new()
-            },
-            dual: (request.diagnostics && dual_feasible).then(|| DualSolution {
-                constraint_duals: values.dual_rows().to_vec(),
-                reduced_costs: values.dual_columns().to_vec(),
-            }),
-        })
-    } else {
-        None
-    };
-    check_budget(deadline, cancel)?;
-    tracing::info!(request_id = %request.request_id, ?status, validation_seconds, build_seconds, solve_seconds, "optimization completed");
-    Ok(SolveResult {
-        request_id: request.request_id,
-        status: status as i32,
-        solution,
-        timings: Some(Timings {
-            validation_seconds,
-            build_seconds,
-            solve_seconds,
-        }),
-        solver_status: format!("{native_status:?}"),
-        execution: Some(crate::pb::ExecutionSettings {
-            cpu_budget: config.cpu_budget as u32,
-            solver_threads: config.solver_threads as u32,
-            max_concurrent_solves: config.max_concurrent_solves as u32,
-        }),
-    })
+    Ok(native)
 }
 
 fn range(lower: Option<f64>, upper: Option<f64>) -> (Bound<f64>, Bound<f64>) {
@@ -219,7 +262,14 @@ mod tests {
                 let deadline = expire.then(|| Instant::now() + Duration::from_secs(1));
                 let hook = control.clone();
                 let worker = tokio::task::spawn_blocking(move || {
-                    solve_inner(request, &Config::default(), deadline, &token, Some(hook))
+                    solve_inner(
+                        request,
+                        &Config::default(),
+                        deadline,
+                        &token,
+                        None,
+                        Some(hook),
+                    )
                 });
                 tokio::time::timeout(Duration::from_secs(5), entered)
                     .await
