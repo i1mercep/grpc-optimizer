@@ -61,7 +61,7 @@ def outcome(job):
 class FakeSessionCall:
     """Synchronous stream double that reads one request per response."""
 
-    def __init__(self, requests, timeout=None):
+    def __init__(self, requests, timeout=None, metadata=()):
         self.requests = requests
         self.timeout = timeout
         self.model = pb.LinearProgram()
@@ -88,7 +88,7 @@ class FakeSessionCall:
 
 
 class FakeAsyncSessionCall:
-    def __init__(self, timeout=None):
+    def __init__(self, timeout=None, metadata=()):
         self.timeout = timeout
         self.messages = []
         self.cancelled = False
@@ -124,7 +124,7 @@ class SolverTests(unittest.TestCase):
         request = self.stub.Solve.call_args.args[0]
         self.assertTrue(request.diagnostics)
         self.assertEqual(request.time_limit_seconds, 5)
-        self.assertEqual(self.stub.Solve.call_args.kwargs, {"timeout": 8})
+        self.assertEqual(self.stub.Solve.call_args.kwargs, {"timeout": 8, "metadata": ()})
         self.channel.close.assert_not_called()
 
     def test_loading_can_be_disabled_and_objective_is_still_correct(self):
@@ -365,7 +365,7 @@ class AsyncSolverTests(unittest.IsolatedAsyncioTestCase):
         request = self.stub.Solve.call_args.args[0]
         self.assertEqual(request.time_limit_seconds, 1)
         self.assertTrue(request.diagnostics)
-        self.assertEqual(self.stub.Solve.call_args.kwargs, {"timeout": 2})
+        self.assertEqual(self.stub.Solve.call_args.kwargs, {"timeout": 2, "metadata": ()})
         self.channel.close.assert_awaited_once()
 
     async def test_async_client_reuses_borrowed_channel_and_respects_loading_option(self):
@@ -399,7 +399,7 @@ class AsyncSolverTests(unittest.IsolatedAsyncioTestCase):
             first = await optimizer.solve(request_id="first")
             m.cap = 12
             await optimizer.solve(request_id="second")
-            self.assertEqual(self.stub.SolveSession.call_args.kwargs, {"timeout": 5})
+            self.assertEqual(self.stub.SolveSession.call_args.kwargs, {"timeout": 5, "metadata": ()})
             self.assertEqual([message.WhichOneof("kind") for message in call.messages], ["model", "input", "input"])
             self.assertEqual(list(call.messages[2].input.constraint_bounds), [pb.BoundOverride(index=0, upper=12)])
             self.assertEqual(first.objective, 29)

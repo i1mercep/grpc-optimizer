@@ -14,6 +14,7 @@ from google.protobuf.json_format import MessageToDict, ParseDict
 
 from grpc_optimizer._generated.optimization.v1 import optimizer_pb2 as pb
 from grpc_optimizer._generated.optimization.v1 import optimizer_pb2_grpc as rpc
+from grpc_optimizer.client import _metadata
 
 ROOT = Path(__file__).resolve().parents[2]
 MODES = ("unary", "bidi")
@@ -43,6 +44,7 @@ async def outcomes(
     mode: str,
     jobs: Sequence[pb.SolveRequest],
     rpc_timeout: float,
+    access_token: str | None = None,
 ) -> AsyncIterator[pb.JobOutcome]:
     """Yield uniform job outcomes for either RPC mode, wrapping unary results.
 
@@ -51,10 +53,10 @@ async def outcomes(
     """
     if mode == "unary":
         for job in jobs:
-            result = await stub.Solve(job, timeout=rpc_timeout)
+            result = await stub.Solve(job, timeout=rpc_timeout, metadata=_metadata(access_token))
             yield pb.JobOutcome(request_id=result.request_id, result=result)
     else:
-        call = stub.SolveStream(timeout=rpc_timeout)
+        call = stub.SolveStream(timeout=rpc_timeout, metadata=_metadata(access_token))
 
         async def produce() -> None:
             """Write every job, then half-close the stream so responses can finish."""
@@ -81,10 +83,16 @@ async def run(args: argparse.Namespace) -> None:
         ("grpc.max_send_message_length", 16 * 1024 * 1024),
     ]
     # Native gRPC targets are host:port, whereas Rust Tonic endpoints use http://.
-    async with grpc.aio.insecure_channel(args.endpoint, options=options) as channel:
+    _metadata(args.access_token)
+    channel = (
+        grpc.aio.secure_channel(args.endpoint, grpc.ssl_channel_credentials(), options=options)
+        if args.tls
+        else grpc.aio.insecure_channel(args.endpoint, options=options)
+    )
+    async with channel:
         await asyncio.wait_for(channel.channel_ready(), timeout=5)
         stub = rpc.OptimizerStub(channel)
-        async for outcome in outcomes(stub, args.mode, jobs, args.deadline):
+        async for outcome in outcomes(stub, args.mode, jobs, args.deadline, args.access_token):
             print(
                 json.dumps(
                     MessageToDict(
@@ -105,6 +113,10 @@ def main() -> None:
     """Validate CLI limits and run the selected RPC mode, reporting transport failures."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--endpoint", default=os.environ.get("OPT_GRPC_TARGET", "127.0.0.1:50051"))
+    parser.add_argument(
+        "--access-token", default=os.environ.get("OPT_ACCESS_TOKEN"), help="IAM access token (or OPT_ACCESS_TOKEN)"
+    )
+    parser.add_argument("--tls", action="store_true", help="use TLS with trusted server certificates")
     parser.add_argument("--mode", choices=MODES, default="unary")
     parser.add_argument("--fixture", type=Path, default=ROOT / "examples/models/production.json")
     parser.add_argument("--jobs", type=int, default=3)

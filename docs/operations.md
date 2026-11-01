@@ -28,6 +28,10 @@ The default solve concurrency is the integer quotient of budget and threads.
 All count and size limits must be positive. Time limits must satisfy
 `0 < default ≤ maximum ≤ 300 seconds`.
 
+Authentication settings are separate from solver limits. Enable OIDC with
+`OPT_AUTH_ENABLED=true`, `OPT_AUTH_ISSUER`, and `OPT_AUTH_AUDIENCE`; see the
+[authentication guide](authentication.md) for all settings and IAM setup.
+
 The server rejects work immediately when global solve capacity is full. Retry
 with backoff or reduce client concurrency. Start with one solver thread per job;
 more threads do not guarantee faster LP solves. Compare fewer multithreaded jobs
@@ -81,9 +85,11 @@ GitHub releases publishes a multi-platform manifest to GHCR with SBOM and proven
 Pull requests build and test without publishing. GHCR packages start private;
 make the package public in its GitHub settings for anonymous pulls.
 
-Local defaults use loopback and plaintext. Use a private network or terminate TLS
-and authentication at a gRPC-capable ingress. The service has no built-in
-authentication.
+Local defaults use loopback and plaintext. For external access, terminate TLS at
+a gRPC-capable ingress, preserve the `authorization` metadata, and enable the
+server's [OIDC authentication](authentication.md). Restrict direct access to the
+backend listener. The runtime image includes CA certificates for issuer/JWKS
+HTTPS requests and the Rust client's HTTPS connections.
 
 Logs are JSON lines on stdout, written by a background thread; if stdout stalls,
 lines are dropped rather than delaying solves. Per-solve timings are `debug`
@@ -148,6 +154,7 @@ universal latency or streaming speed advantage.
 | `solver` | Build and solve HiGHS models |
 | `engine` | Admit jobs and manage native work |
 | `grpc` | Implement transport and streaming |
+| `auth` | Validate OIDC configuration, discover public keys, and verify tokens |
 | `config` | Read and validate settings |
 | `samples` | Load fixtures and generate models |
 

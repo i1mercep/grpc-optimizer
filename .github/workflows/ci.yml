@@ -44,3 +44,5 @@ jobs:
           server_pid=$!
           trap 'kill -TERM "$server_pid"; wait "$server_pid"; cat /tmp/grpc-optimizer-server.log' EXIT
           uv run --locked python clients/python/smoke_test.py
+      - name: Authenticated Python interoperability
+        run: cargo test --locked --test auth authenticated_python_interoperability -- --ignored --nocapture

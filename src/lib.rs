@@ -3,6 +3,7 @@
 //! Use [`engine::Engine`] for admission control and async execution; [`solver::solve`]
 //! is the synchronous entry point for callers that manage their own worker capacity.
 
+pub mod auth;
 pub mod config;
 pub mod engine;
 pub mod grpc;

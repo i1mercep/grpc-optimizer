@@ -41,6 +41,10 @@ test *args:
 # Run all local Rust checks.
 check: lint test
 
+# Authenticated Python/Rust interoperability with an in-process OIDC provider (no server needed).
+auth-smoke:
+    cargo test --locked --test auth authenticated_python_interoperability -- --ignored --nocapture
+
 # Install the Python SDK and development tools from the lockfile.
 python-setup:
     uv sync --locked

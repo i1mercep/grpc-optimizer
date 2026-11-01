@@ -16,7 +16,10 @@ from grpc_optimizer import (
     solve,
     solve_async,
 )
+from grpc_optimizer.client import _metadata
 from pyomo_client import build_model
+
+ACCESS_TOKEN = os.environ.get("OPT_ACCESS_TOKEN")
 
 
 async def check_pyomo(target: str) -> None:
@@ -24,7 +27,9 @@ async def check_pyomo(target: str) -> None:
     # Exercise the public one-call APIs against the Rust server.
     model = build_model()
     model.profit.set_value(model.profit.expr + 7)
-    result = await asyncio.to_thread(solve, model, endpoint=target, diagnostics=True, request_id="pyomo-sync")
+    result = await asyncio.to_thread(
+        solve, model, endpoint=target, diagnostics=True, request_id="pyomo-sync", access_token=ACCESS_TOKEN
+    )
     assert result.is_optimal and result.solution_loaded, result
     assert result.request_id == "pyomo-sync"
     assert math.isclose(pyo.value(model.x), 60, abs_tol=1e-6)
@@ -37,13 +42,13 @@ async def check_pyomo(target: str) -> None:
 
     async_model = build_model()
     async_model.x.set_value(1)
-    async_result = await solve_async(async_model, endpoint=target, load_solution=False)
+    async_result = await solve_async(async_model, endpoint=target, load_solution=False, access_token=ACCESS_TOKEN)
     assert async_result.is_optimal and async_result.has_solution and not async_result.solution_loaded
     assert pyo.value(async_model.x) == 1
     assert async_result.objective is not None
     assert math.isclose(async_result.objective, 3600, abs_tol=1e-6)
 
-    async with AsyncPyomoClient(target) as client:
+    async with AsyncPyomoClient(target, access_token=ACCESS_TOKEN) as client:
         for _ in range(2):
             result = await client.solve(async_model)
             assert result.is_optimal and result.solution_loaded
@@ -54,7 +59,7 @@ async def check_pyomo(target: str) -> None:
 
     def check_sync_reuse():
         """Verify repeated solves through one synchronous client against the live server."""
-        with PyomoClient(target) as client:
+        with PyomoClient(target, access_token=ACCESS_TOKEN) as client:
             for _ in range(2):
                 assert client.solve(build_model()).is_optimal
 
@@ -74,7 +79,7 @@ async def check_optimizer(target: str) -> None:
 
     def run_sync():
         model = session_model()
-        with GrpcOptimizer(model, target, timeout=10) as optimizer:
+        with GrpcOptimizer(model, target, timeout=10, access_token=ACCESS_TOKEN) as optimizer:
             assert math.isclose(optimizer.solve().objective or 0, 3600, abs_tol=1e-6)
             model.hours = 50
             result = optimizer.solve()
@@ -83,7 +88,7 @@ async def check_optimizer(target: str) -> None:
 
     await asyncio.to_thread(run_sync)
     model = session_model()
-    async with AsyncGrpcOptimizer(model, target, timeout=10) as optimizer:
+    async with AsyncGrpcOptimizer(model, target, timeout=10, access_token=ACCESS_TOKEN) as optimizer:
         model.hours = 50
         assert math.isclose((await optimizer.solve()).objective or 0, 2000, abs_tol=1e-6)
         model.hours = 100
@@ -101,7 +106,7 @@ async def main() -> None:
         for path in sorted((ROOT / "examples/models").glob("*.json")):
             sample, jobs = load_jobs(path, 2, diagnostics=True)
             for mode in MODES:
-                received = [o async for o in outcomes(stub, mode, jobs, 10)]
+                received = [o async for o in outcomes(stub, mode, jobs, 10, ACCESS_TOKEN)]
                 assert len(received) == 2, (sample["name"], mode)
                 for outcome in received:
                     assert outcome.HasField("result"), outcome
@@ -119,13 +124,13 @@ async def main() -> None:
                         assert not result.HasField("solution"), result
         for mode in MODES[1:]:
             _, jobs = load_jobs(ROOT / "examples/models/production.json", 2, invalid_first=True)
-            received = [o async for o in outcomes(stub, mode, jobs, 10)]
+            received = [o async for o in outcomes(stub, mode, jobs, 10, ACCESS_TOKEN)]
             assert any(o.HasField("error") and o.error.code == 3 for o in received)
             assert any(o.HasField("result") for o in received)
 
         # Keep the request side open until the first result arrives.
         _, jobs = load_jobs(ROOT / "examples/models/production.json", 1)
-        call = stub.SolveStream(timeout=10)
+        call = stub.SolveStream(timeout=10, metadata=_metadata(ACCESS_TOKEN))
         await call.write(jobs[0])
         first = await asyncio.wait_for(call.read(), 5)
         assert first.HasField("result")
@@ -133,7 +138,7 @@ async def main() -> None:
         assert await call.read() is grpc.aio.EOF
 
         # An open request side with no jobs makes deadline expiry deterministic.
-        call = stub.SolveStream(timeout=0.03)
+        call = stub.SolveStream(timeout=0.03, metadata=_metadata(ACCESS_TOKEN))
         try:
             await call.read()
         except grpc.aio.AioRpcError as error:

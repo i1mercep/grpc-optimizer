@@ -1,5 +1,12 @@
 # API guide
 
+When [OIDC authentication](authentication.md) is enabled, every optimizer RPC
+requires `authorization: Bearer <access_token>` metadata. Invalid credentials
+return `UNAUTHENTICATED` before protobuf decoding or admission; an unavailable
+provider returns `UNAVAILABLE` when fresh verification keys are needed. Health
+checks remain public, and reflection requires authentication. The protobuf
+messages are unchanged.
+
 [Back to README](../README.md) · [Operations guide](operations.md)
 
 The [protobuf contract](../proto/optimization/v1/optimizer.proto) defines package

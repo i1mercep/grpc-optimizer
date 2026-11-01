@@ -12,6 +12,7 @@ More detail:
 - [Python SDK guide](docs/python.md): all options, async usage, TLS.
 - [API guide](docs/api.md): RPCs, results, diagnostics, errors.
 - [Operations guide](docs/operations.md): limits, deployment, benchmarking.
+- [Authentication guide](docs/authentication.md): OIDC, Zitadel, Keycloak, and bearer tokens.
 - [Protobuf contract](proto/optimization/v1/optimizer.proto).
 
 ## 1. Host the server
@@ -41,9 +42,19 @@ docker compose ps      # wait for (healthy)
 Image tags: `latest` and `X.Y.Z` for releases, `edge` for the latest `main`
 commit, `sha-<commit>` for any commit. Pin a version in production.
 
-The server speaks plaintext gRPC with no authentication. Before exposing it
-beyond localhost, put it on a private network or behind a TLS-terminating proxy.
-See [deployment notes](docs/operations.md#deployment).
+The server speaks plaintext gRPC; terminate TLS at a gRPC-capable ingress.
+For IAM authentication, enable OIDC and configure your issuer and API audience:
+
+```sh
+OPT_AUTH_ENABLED=true \
+OPT_AUTH_ISSUER=https://iam.example.com/realms/optimizer \
+OPT_AUTH_AUDIENCE=grpc-optimizer just run
+```
+
+Clients send a JWT access token obtained from Zitadel, Keycloak, or another OIDC
+provider. See the [authentication guide](docs/authentication.md) for provider
+setup, token acquisition, Docker configuration, and authenticated client examples.
+Authentication is disabled by default for existing local deployments.
 
 ### From source
 
@@ -218,6 +229,7 @@ Run `just` to list all commands. Common ones:
 | `just check` | Rust lint and tests |
 | `just python-check` | Python lint, types, and unit tests (no server needed) |
 | `just python-test` | Python unit and interoperability tests (needs a running server) |
+| `just auth-smoke` | Authenticated Python interoperability with a local mock OIDC provider |
 | `just python-fmt` / `just fmt` | Format Python / Rust |
 | `just python-proto` | Regenerate Python bindings after changing the `.proto` file |
 | `just bench --help` | Benchmark options; see [benchmarking](docs/operations.md#benchmarking) |

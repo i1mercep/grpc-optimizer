@@ -4,6 +4,7 @@ use std::{path::PathBuf, time::Duration};
 
 use clap::{Parser, ValueEnum};
 use grpc_optimizer::{
+    grpc::client::{BearerToken, endpoint},
     pb::{
         JobOutcome, SessionRequest, SolveInput, SolveRequest, job_outcome,
         optimizer_client::OptimizerClient, session_request,
@@ -11,7 +12,7 @@ use grpc_optimizer::{
     samples::{self, Family},
 };
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::{Request, transport::Endpoint};
+use tonic::Request;
 
 #[derive(Clone, Copy, ValueEnum)]
 enum Mode {
@@ -26,6 +27,9 @@ enum Mode {
 struct Args {
     #[arg(long, env = "OPT_ENDPOINT", default_value = "http://127.0.0.1:50051")]
     endpoint: String,
+    /// IAM access token; prefer OPT_ACCESS_TOKEN to keep it out of command arguments.
+    #[arg(long, env = "OPT_ACCESS_TOKEN", hide_env_values = true)]
+    access_token: Option<String>,
     #[arg(long, value_enum, default_value = "unary")]
     mode: Mode,
     #[arg(long, default_value = "production")]
@@ -81,8 +85,7 @@ async fn main() -> anyhow::Result<()> {
     );
     anyhow::ensure!((1..=64).contains(&args.jobs), "jobs must be in 1..=64");
     if args.health {
-        let channel = Endpoint::from_shared(args.endpoint)?
-            .connect_timeout(Duration::from_secs(2))
+        let channel = endpoint(args.endpoint, Duration::from_secs(2))?
             .connect()
             .await?;
         let response = tonic_health::pb::health_client::HealthClient::new(channel)
@@ -131,11 +134,11 @@ async fn main() -> anyhow::Result<()> {
             job
         })
         .collect();
-    let channel = Endpoint::from_shared(args.endpoint)?
-        .connect_timeout(Duration::from_secs(5))
+    let bearer = BearerToken::new(args.access_token.as_deref())?;
+    let channel = endpoint(args.endpoint, Duration::from_secs(5))?
         .connect()
         .await?;
-    let mut client = OptimizerClient::new(channel)
+    let mut client = OptimizerClient::with_interceptor(channel, bearer)
         .max_decoding_message_size(16 * 1024 * 1024)
         .max_encoding_message_size(16 * 1024 * 1024);
     match args.mode {

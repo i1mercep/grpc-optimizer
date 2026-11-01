@@ -1,5 +1,8 @@
 //! gRPC handlers with bounded streaming, per-job errors, and RPC-wide deadlines.
 
+pub mod auth;
+pub mod client;
+
 use std::{
     pin::Pin,
     sync::{Arc, Mutex},
@@ -302,6 +305,9 @@ pub async fn wait_deadline(deadline: Option<Instant>) {
 /// Missing metadata means no deadline; malformed or overflowing values are rejected.
 /// Tonic also enforces the timeout at the transport layer.
 pub fn deadline<T>(request: &Request<T>) -> Result<Option<Instant>, Status> {
+    if let Some(deadline) = request.extensions().get::<auth::RpcDeadline>() {
+        return Ok(deadline.0);
+    }
     let Some(raw) = request.metadata().get("grpc-timeout") else {
         return Ok(None);
     };

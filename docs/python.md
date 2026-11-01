@@ -123,21 +123,43 @@ Integer/binary, nonlinear, and unsupported active components are rejected.
 
 ## TLS and channel ownership
 
-Default connections use plaintext gRPC. Supply a configured channel for TLS or
-custom transport options:
+Pass an IAM access token and `tls=True` when connecting to a TLS ingress:
+
+```python
+import os
+from grpc_optimizer import solve, PyomoClient
+
+result = solve(model, endpoint="optimizer.example.com:443",
+               access_token=os.environ["OPT_ACCESS_TOKEN"], tls=True)
+
+with PyomoClient("optimizer.example.com:443",
+                 access_token=os.environ["OPT_ACCESS_TOKEN"], tls=True) as client:
+    result = client.solve(model)
+```
+
+All four client classes and `solve` / `solve_async` accept `access_token=None`
+and `tls=False`. The SDK uses only the explicitly supplied token; example CLIs
+also read `OPT_ACCESS_TOKEN`. Tokens are attached to each unary call or once when
+opening a session. An accepted session continues after token expiry; obtain a
+fresh token before opening another call. The SDK does not obtain or refresh
+tokens. See [IAM setup](authentication.md).
+
+Default connections use plaintext gRPC. For a private CA or custom transport
+options, supply a configured channel and omit `tls=True`:
 
 ```python
 import grpc
 from grpc_optimizer import PyomoClient
 
 with grpc.secure_channel("server:443", grpc.ssl_channel_credentials()) as channel:
-    with PyomoClient(channel=channel) as client:
+    with PyomoClient(channel=channel, access_token=access_token) as client:
         result = client.solve(model)
 ```
 
 `AsyncPyomoClient(channel=channel)` accepts a `grpc.aio` channel. The caller owns
 injected channels; closing the client leaves them open. Clients close channels
-they create themselves. Supply either an endpoint or a channel.
+they create themselves. Supply either an endpoint or a channel. `tls=True` with
+an injected channel raises `ValueError` because its owner controls transport.
 
 ## Architecture and maintenance
 

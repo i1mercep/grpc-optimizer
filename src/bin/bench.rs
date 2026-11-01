@@ -11,6 +11,7 @@ use futures::{StreamExt, stream};
 use grpc_optimizer::{
     config::Config,
     engine::Engine,
+    grpc::client::{BearerToken, Client, endpoint},
     pb::{
         ExecutionSettings, JobOutcome, SolveRequest, SolveResult, SolveStatus, job_outcome,
         optimizer_client::OptimizerClient,
@@ -21,10 +22,7 @@ use serde::Serialize;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
-use tonic::{
-    Request,
-    transport::{Channel, Endpoint},
-};
+use tonic::Request;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum Mode {
@@ -39,6 +37,9 @@ enum Mode {
 struct Args {
     #[arg(long, env = "OPT_ENDPOINT", default_value = "http://127.0.0.1:50051")]
     endpoint: String,
+    /// IAM access token used by remote modes only.
+    #[arg(long, env = "OPT_ACCESS_TOKEN", hide_env_values = true)]
+    access_token: Option<String>,
     #[arg(long, value_enum, default_value = "all")]
     mode: Mode,
     #[arg(long, value_enum, default_value = "production")]
@@ -126,7 +127,7 @@ async fn run(
     mode: Mode,
     input: Vec<SolveRequest>,
     engine: &Engine,
-    client: Option<&OptimizerClient<Channel>>,
+    client: Option<&Client>,
     args: &Args,
 ) -> Vec<Measurement> {
     match mode {
@@ -263,11 +264,11 @@ async fn main() -> anyhow::Result<()> {
         None
     } else {
         Some(
-            OptimizerClient::new(
-                Endpoint::from_shared(args.endpoint.clone())?
-                    .connect_timeout(Duration::from_secs(5))
+            OptimizerClient::with_interceptor(
+                endpoint(args.endpoint.clone(), Duration::from_secs(5))?
                     .connect()
                     .await?,
+                BearerToken::new(args.access_token.as_deref())?,
             )
             .max_decoding_message_size(16 * 1024 * 1024)
             .max_encoding_message_size(16 * 1024 * 1024),

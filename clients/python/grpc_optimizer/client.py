@@ -45,12 +45,35 @@ def _target(endpoint: str | None) -> str:
     return target
 
 
-def _connect[C](endpoint: str | None, channel: C | None, factory: Callable[..., C]) -> tuple[C, bool]:
+def _metadata(access_token: str | None) -> tuple[tuple[str, str], ...]:
+    """Validate before creating a channel; credentials never appear in validation errors."""
+    if access_token is None:
+        return ()
+    if (
+        not access_token
+        or len(access_token) > 16 * 1024
+        or any(not 33 <= ord(char) <= 126 or char == "," for char in access_token)
+    ):
+        raise ValueError("invalid access token")
+    return (("authorization", f"Bearer {access_token}"),)
+
+
+def _connect[C](
+    endpoint: str | None,
+    channel: C | None,
+    factory: Callable[..., C],
+    secure_factory: Callable[..., C],
+    tls: bool,
+) -> tuple[C, bool]:
     """Return the channel and whether it is owned; borrow the caller's or create one, never both."""
     if endpoint is not None and channel is not None:
         raise ValueError("provide endpoint or channel, not both")
     if channel is not None:
+        if tls:
+            raise ValueError("configure TLS on the supplied channel instead of passing tls=True")
         return channel, False
+    if tls:
+        return secure_factory(_target(endpoint), grpc.ssl_channel_credentials(), options=_CHANNEL_OPTIONS), True
     return factory(_target(endpoint), options=_CHANNEL_OPTIONS), True
 
 
@@ -75,15 +98,20 @@ class GrpcOptimizer:
         *,
         channel: grpc.Channel | None = None,
         timeout: float | None = None,
+        access_token: str | None = None,
+        tls: bool = False,
     ) -> None:
         """Send the model over a new or borrowed channel; timeout=None keeps the call open until close()."""
         _positive(timeout, "timeout")
+        self._metadata = _metadata(access_token)
         self._model = model
         self._base = prepare_model(model, "base").request.model
-        self._channel, self._owned = _connect(endpoint, channel, grpc.insecure_channel)
+        self._channel, self._owned = _connect(endpoint, channel, grpc.insecure_channel, grpc.secure_channel, tls)
         self._requests: queue.Queue[pb.SessionRequest | None] = queue.Queue()
         self._requests.put(pb.SessionRequest(model=self._base))
-        self._responses = rpc.OptimizerStub(self._channel).SolveSession(_drain(self._requests), timeout=timeout)
+        self._responses = rpc.OptimizerStub(self._channel).SolveSession(
+            _drain(self._requests), timeout=timeout, metadata=self._metadata
+        )
         self._lock = threading.Lock()
         self._closed = False
 
@@ -144,13 +172,18 @@ class AsyncGrpcOptimizer:
         *,
         channel: grpc.aio.Channel | None = None,
         timeout: float | None = None,
+        access_token: str | None = None,
+        tls: bool = False,
     ) -> None:
         """Open the call over a new or borrowed channel; the model is sent with the first solve."""
         _positive(timeout, "timeout")
+        self._metadata = _metadata(access_token)
         self._model = model
         self._base = prepare_model(model, "base").request.model
-        self._channel, self._owned = _connect(endpoint, channel, grpc.aio.insecure_channel)
-        self._call = rpc.OptimizerStub(self._channel).SolveSession(timeout=timeout)
+        self._channel, self._owned = _connect(
+            endpoint, channel, grpc.aio.insecure_channel, grpc.aio.secure_channel, tls
+        )
+        self._call = rpc.OptimizerStub(self._channel).SolveSession(timeout=timeout, metadata=self._metadata)
         self._lock = asyncio.Lock()
         self._started = False
         self._closed = False
@@ -206,9 +239,17 @@ class PyomoClient:
     be modified while their solve is in progress.
     """
 
-    def __init__(self, endpoint: str | None = None, *, channel: grpc.Channel | None = None) -> None:
+    def __init__(
+        self,
+        endpoint: str | None = None,
+        *,
+        channel: grpc.Channel | None = None,
+        access_token: str | None = None,
+        tls: bool = False,
+    ) -> None:
         """Create an owned channel or borrow the caller's channel, but never accept both inputs."""
-        self._channel, self._owned = _connect(endpoint, channel, grpc.insecure_channel)
+        self._metadata = _metadata(access_token)
+        self._channel, self._owned = _connect(endpoint, channel, grpc.insecure_channel, grpc.secure_channel, tls)
         self._stub = rpc.OptimizerStub(self._channel)
         self._closed = False
 
@@ -232,7 +273,7 @@ class PyomoClient:
             raise RuntimeError("client is closed")
         _positive(timeout, "timeout")
         prepared = _prepare(model, request_id, time_limit, diagnostics)
-        response = self._stub.Solve(prepared.request, timeout=timeout)
+        response = self._stub.Solve(prepared.request, timeout=timeout, metadata=self._metadata)
         return finish_solve(prepared, response, load_solution=load_solution)
 
     def close(self) -> None:
@@ -253,9 +294,19 @@ class PyomoClient:
 class AsyncPyomoClient:
     """Async counterpart of PyomoClient; create and use within one event loop."""
 
-    def __init__(self, endpoint: str | None = None, *, channel: grpc.aio.Channel | None = None) -> None:
+    def __init__(
+        self,
+        endpoint: str | None = None,
+        *,
+        channel: grpc.aio.Channel | None = None,
+        access_token: str | None = None,
+        tls: bool = False,
+    ) -> None:
         """Create an owned async channel or borrow one bound to the current event loop."""
-        self._channel, self._owned = _connect(endpoint, channel, grpc.aio.insecure_channel)
+        self._metadata = _metadata(access_token)
+        self._channel, self._owned = _connect(
+            endpoint, channel, grpc.aio.insecure_channel, grpc.aio.secure_channel, tls
+        )
         self._stub = rpc.OptimizerStub(self._channel)
         self._closed = False
 
@@ -274,7 +325,7 @@ class AsyncPyomoClient:
             raise RuntimeError("client is closed")
         _positive(timeout, "timeout")
         prepared = _prepare(model, request_id, time_limit, diagnostics)
-        response = await self._stub.Solve(prepared.request, timeout=timeout)
+        response = await self._stub.Solve(prepared.request, timeout=timeout, metadata=self._metadata)
         return finish_solve(prepared, response, load_solution=load_solution)
 
     async def close(self) -> None:
@@ -296,6 +347,8 @@ def solve(
     model: Any,
     *,
     endpoint: str | None = None,
+    access_token: str | None = None,
+    tls: bool = False,
     timeout: float = 30,
     time_limit: float | None = None,
     diagnostics: bool = False,
@@ -303,7 +356,7 @@ def solve(
     load_solution: bool = True,
 ) -> SolveResult:
     """Solve a continuous LP with a temporary channel, optionally loading its solution."""
-    with PyomoClient(endpoint) as client:
+    with PyomoClient(endpoint, access_token=access_token, tls=tls) as client:
         return client.solve(
             model,
             timeout=timeout,
@@ -318,6 +371,8 @@ async def solve_async(
     model: Any,
     *,
     endpoint: str | None = None,
+    access_token: str | None = None,
+    tls: bool = False,
     timeout: float = 30,  # noqa: ASYNC109 -- same deadline option as the synchronous API.
     time_limit: float | None = None,
     diagnostics: bool = False,
@@ -325,7 +380,7 @@ async def solve_async(
     load_solution: bool = True,
 ) -> SolveResult:
     """Await a solve with a temporary channel, optionally loading values into the model."""
-    async with AsyncPyomoClient(endpoint) as client:
+    async with AsyncPyomoClient(endpoint, access_token=access_token, tls=tls) as client:
         return await client.solve(
             model,
             timeout=timeout,

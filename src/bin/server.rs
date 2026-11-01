@@ -1,9 +1,10 @@
 //! Serves optimization, health, and reflection; drains native workers on shutdown.
 
 use grpc_optimizer::{
+    auth::{TokenVerifier, config::AuthConfig, oidc::OidcVerifier},
     config::Config,
     engine::Engine,
-    grpc::Service,
+    grpc::{Service, auth::AuthLayer},
     pb::{DESCRIPTOR, optimizer_server::OptimizerServer},
 };
 use tonic::transport::Server;
@@ -22,6 +23,14 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
     let config = Config::from_env()?;
+    let verifier: Option<std::sync::Arc<dyn TokenVerifier>> = match AuthConfig::from_env()? {
+        Some(config) => Some(std::sync::Arc::new(OidcVerifier::discover(config).await?)),
+        None => None,
+    };
+    tracing::info!(
+        authentication_enabled = verifier.is_some(),
+        "authentication configured"
+    );
     let engine = Engine::new(config.clone())?;
     let reflection = tonic_reflection::server::Builder::configure()
         .register_encoded_file_descriptor_set(DESCRIPTOR)
@@ -32,6 +41,7 @@ async fn main() -> anyhow::Result<()> {
     let shutdown_engine = engine.clone();
     tracing::info!(address = %config.listen_addr, ?config, "optimizer listening");
     let result = Server::builder()
+        .layer(AuthLayer::new(verifier))
         .add_service(health)
         .add_service(reflection)
         .add_service(service)

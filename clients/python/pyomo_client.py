@@ -25,7 +25,7 @@ def build_model() -> Any:
 def run(args: argparse.Namespace) -> None:
     """Solve the example model and print its status and any loaded solution."""
     model = build_model()
-    result = solve(model, endpoint=args.endpoint, timeout=args.deadline)
+    result = solve(model, endpoint=args.endpoint, timeout=args.deadline, access_token=args.access_token, tls=args.tls)
     print(f"Status: {result.status.name}")
     if result.solution_loaded:
         print(f"x = {pyo.value(model.x):g}")
@@ -37,6 +37,10 @@ def main() -> None:
     """Parse connection options, validate the deadline, and report RPC failures."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--endpoint", default=os.environ.get("OPT_GRPC_TARGET", "127.0.0.1:50051"))
+    parser.add_argument(
+        "--access-token", default=os.environ.get("OPT_ACCESS_TOKEN"), help="IAM access token (or OPT_ACCESS_TOKEN)"
+    )
+    parser.add_argument("--tls", action="store_true", help="use TLS with trusted server certificates")
     parser.add_argument("--deadline", type=float, default=30)
     args = parser.parse_args()
     if not 0 < args.deadline <= 86400:

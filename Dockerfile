@@ -11,7 +11,7 @@ RUN CARGO_PROFILE_RELEASE_STRIP=symbols cargo build --locked --release \
     --bin grpc-optimizer-server --bin grpc-optimizer-client
 
 FROM debian:trixie-slim
-RUN apt-get update && apt-get install -y --no-install-recommends libstdc++6 \
+RUN apt-get update && apt-get install -y --no-install-recommends libstdc++6 ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /build/target/release/grpc-optimizer-server /build/target/release/grpc-optimizer-client ./
