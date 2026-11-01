@@ -1,17 +1,15 @@
 """Build a Pyomo production model and solve it through the gRPC service."""
 
-import argparse
-import os
 import sys
-from typing import Any
 
+import click
 import grpc
 import pyomo.environ as pyo
 
 from grpc_optimizer import solve
 
 
-def build_model() -> Any:
+def build_model() -> pyo.ConcreteModel:
     """Build a two-product profit LP constrained by machine and material capacity."""
     model = pyo.ConcreteModel()
     model.x = pyo.Var(domain=pyo.NonNegativeReals)
@@ -22,10 +20,10 @@ def build_model() -> Any:
     return model
 
 
-def run(args: argparse.Namespace) -> None:
+def run(endpoint: str, deadline: float, access_token: str | None, tls: bool) -> None:
     """Solve the example model and print its status and any loaded solution."""
     model = build_model()
-    result = solve(model, endpoint=args.endpoint, timeout=args.deadline, access_token=args.access_token, tls=args.tls)
+    result = solve(model, endpoint=endpoint, timeout=deadline, access_token=access_token, tls=tls)
     print(f"Status: {result.status.name}")
     if result.solution_loaded:
         print(f"x = {pyo.value(model.x):g}")
@@ -33,20 +31,17 @@ def run(args: argparse.Namespace) -> None:
         print(f"Objective: {result.objective:g}")
 
 
-def main() -> None:
+@click.command(help=__doc__)
+@click.option("--endpoint", default="127.0.0.1:50051", envvar="OPT_GRPC_TARGET")
+@click.option("--access-token", envvar="OPT_ACCESS_TOKEN", help="IAM access token (or OPT_ACCESS_TOKEN)")
+@click.option("--tls", is_flag=True, help="use TLS with trusted server certificates")
+@click.option("--deadline", type=float, default=30)
+def main(endpoint: str, access_token: str | None, tls: bool, deadline: float) -> None:
     """Parse connection options, validate the deadline, and report RPC failures."""
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--endpoint", default=os.environ.get("OPT_GRPC_TARGET", "127.0.0.1:50051"))
-    parser.add_argument(
-        "--access-token", default=os.environ.get("OPT_ACCESS_TOKEN"), help="IAM access token (or OPT_ACCESS_TOKEN)"
-    )
-    parser.add_argument("--tls", action="store_true", help="use TLS with trusted server certificates")
-    parser.add_argument("--deadline", type=float, default=30)
-    args = parser.parse_args()
-    if not 0 < args.deadline <= 86400:
-        parser.error("deadline must be in (0,86400] seconds")
+    if not 0 < deadline <= 86400:
+        raise click.BadParameter("must be in (0,86400] seconds", param_hint="--deadline")
     try:
-        run(args)
+        run(endpoint, deadline, access_token, tls)
     except grpc.RpcError as error:
         print(f"RPC failed: {error.code().name}: {error.details()}", file=sys.stderr)
         raise SystemExit(1) from error

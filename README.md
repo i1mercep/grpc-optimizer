@@ -227,8 +227,10 @@ Run `just` to list all commands. Common ones:
 | Command | Purpose |
 | --- | --- |
 | `just check` | Rust lint and tests |
-| `just python-check` | Python lint, types, and unit tests (no server needed) |
-| `just python-test` | Python unit and interoperability tests (needs a running server) |
+| `just test` | Rust unit and integration tests |
+| `just python-test` | Python 3.14 unit tests with line and branch coverage |
+| `just python-check` | Python formatting, lint, types, and unit tests with coverage (no server needed) |
+| `just python-integration` | Python unit and interoperability tests (needs a running server) |
 | `just auth-smoke` | Authenticated Python interoperability with a local mock OIDC provider |
 | `just python-fmt` / `just fmt` | Format Python / Rust |
 | `just python-proto` | Regenerate Python bindings after changing the `.proto` file |

@@ -3,14 +3,20 @@ name = "grpc-optimizer-clients"
 version = "0.1.0"
 description = "Solve Pyomo linear models through grpc-optimizer"
 requires-python = ">=3.14,<3.15"
-dependencies = ["grpcio==1.84.0", "protobuf==7.36.2", "pyomo==6.10.1"]
+dependencies = [
+    "click>=8.5.0",
+    "grpcio==1.85.1",
+    "protobuf==7.36.2",
+    "pyomo==6.10.1",
+]
 
 [dependency-groups]
 dev = [
-    "grpcio-tools==1.84.0",
+    "coverage>=7.17.0",
+    "grpcio-tools==1.85.1",
     "pyrefly",
     "ruff",
-    "types-grpcio>=1.84.0.20261020",
+    "types-grpcio>=1.85.0.20261028",
     "types-protobuf",
 ]
 
@@ -57,3 +63,17 @@ search-path = ["clients/python"]
 python-version = "3.14"
 # Pyomo constructs component attributes dynamically and has no typing contract.
 replace-untyped-imports-with-any = ["pyomo.*"]
+
+[tool.coverage.run]
+branch = true
+source = ["clients/python"]
+omit = [
+    "clients/python/grpc_optimizer/_generated/*",
+    "clients/python/generated/*",
+    "clients/python/test_*.py",
+    "clients/python/smoke_test.py",
+    "clients/python/generate_stubs.py",
+]
+
+[tool.coverage.report]
+show_missing = true

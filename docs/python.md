@@ -177,4 +177,12 @@ repository as a compatibility shim. New low-level users can import it from
 After changing the wire contract, run `just python-proto` and commit the generated
 bindings. CI checks regeneration, static analysis, unit tests, distribution
 building/imports, and interoperability with the Rust server. Run
-`just python-check` locally, then `just python-test` with a running server.
+`just python-check` locally for formatting, lint, types, and unit tests with line
+and branch coverage, then `just python-integration` with a running server.
+
+Run `just python-test` for Python 3.14 tests and coverage alone; append unittest
+options such as `just python-test -v` or `just python-test -k Authentication`.
+`just python-coverage` is an alias for `just python-test`. The terminal report shows
+missing lines in handwritten clients and SDK code; generated bindings and test
+helpers are excluded. For an HTML report, run `uv run --locked coverage html`
+afterward and open `htmlcov/index.html`.

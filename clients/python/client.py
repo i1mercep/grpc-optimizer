@@ -1,14 +1,13 @@
 """Async examples of unary and bidirectional gRPC calls. Generate stubs before running."""
 
-import argparse
 import asyncio
 import json
-import os
 import sys
 from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 from typing import Any
 
+import click
 import grpc
 from google.protobuf.json_format import MessageToDict, ParseDict
 
@@ -75,24 +74,34 @@ async def outcomes(
             await asyncio.gather(producer, return_exceptions=True)
 
 
-async def run(args: argparse.Namespace) -> None:
+async def run(
+    endpoint: str,
+    mode: str,
+    fixture: Path,
+    jobs: int,
+    deadline: float,
+    diagnostics: bool,
+    invalid_first: bool,
+    access_token: str | None,
+    tls: bool,
+) -> None:
     """Wait for a connection, submit fixture jobs, and print JSON outcomes and job errors."""
-    _, jobs = load_jobs(args.fixture, args.jobs, args.diagnostics, args.invalid_first)
+    _, requests = load_jobs(fixture, jobs, diagnostics, invalid_first)
     options = [
         ("grpc.max_receive_message_length", 16 * 1024 * 1024),
         ("grpc.max_send_message_length", 16 * 1024 * 1024),
     ]
     # Native gRPC targets are host:port, whereas Rust Tonic endpoints use http://.
-    _metadata(args.access_token)
+    _metadata(access_token)
     channel = (
-        grpc.aio.secure_channel(args.endpoint, grpc.ssl_channel_credentials(), options=options)
-        if args.tls
-        else grpc.aio.insecure_channel(args.endpoint, options=options)
+        grpc.aio.secure_channel(endpoint, grpc.ssl_channel_credentials(), options=options)
+        if tls
+        else grpc.aio.insecure_channel(endpoint, options=options)
     )
     async with channel:
         await asyncio.wait_for(channel.channel_ready(), timeout=5)
         stub = rpc.OptimizerStub(channel)
-        async for outcome in outcomes(stub, args.mode, jobs, args.deadline, args.access_token):
+        async for outcome in outcomes(stub, mode, requests, deadline, access_token):
             print(
                 json.dumps(
                     MessageToDict(
@@ -109,25 +118,32 @@ async def run(args: argparse.Namespace) -> None:
                 )
 
 
-def main() -> None:
+@click.command(help=__doc__)
+@click.option("--endpoint", default="127.0.0.1:50051", envvar="OPT_GRPC_TARGET")
+@click.option("--access-token", envvar="OPT_ACCESS_TOKEN", help="IAM access token (or OPT_ACCESS_TOKEN)")
+@click.option("--tls", is_flag=True, help="use TLS with trusted server certificates")
+@click.option("--mode", type=click.Choice(MODES), default="unary")
+@click.option("--fixture", type=click.Path(path_type=Path), default=ROOT / "examples/models/production.json")
+@click.option("--jobs", type=click.IntRange(1, 64), default=3)
+@click.option("--deadline", type=float, default=30)
+@click.option("--diagnostics", is_flag=True)
+@click.option("--invalid-first", is_flag=True)
+def main(
+    endpoint: str,
+    access_token: str | None,
+    tls: bool,
+    mode: str,
+    fixture: Path,
+    jobs: int,
+    deadline: float,
+    diagnostics: bool,
+    invalid_first: bool,
+) -> None:
     """Validate CLI limits and run the selected RPC mode, reporting transport failures."""
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--endpoint", default=os.environ.get("OPT_GRPC_TARGET", "127.0.0.1:50051"))
-    parser.add_argument(
-        "--access-token", default=os.environ.get("OPT_ACCESS_TOKEN"), help="IAM access token (or OPT_ACCESS_TOKEN)"
-    )
-    parser.add_argument("--tls", action="store_true", help="use TLS with trusted server certificates")
-    parser.add_argument("--mode", choices=MODES, default="unary")
-    parser.add_argument("--fixture", type=Path, default=ROOT / "examples/models/production.json")
-    parser.add_argument("--jobs", type=int, default=3)
-    parser.add_argument("--deadline", type=float, default=30)
-    parser.add_argument("--diagnostics", action="store_true")
-    parser.add_argument("--invalid-first", action="store_true")
-    args = parser.parse_args()
-    if not 1 <= args.jobs <= 64 or not 0 < args.deadline <= 86400:
-        parser.error("jobs must be 1..64 and deadline must be in (0,86400] seconds")
+    if not 0 < deadline <= 86400:
+        raise click.BadParameter("must be in (0,86400] seconds", param_hint="--deadline")
     try:
-        asyncio.run(run(args))
+        asyncio.run(run(endpoint, mode, fixture, jobs, deadline, diagnostics, invalid_first, access_token, tls))
     except grpc.aio.AioRpcError as error:
         print(f"RPC failed: {error.code().name}: {error.details()}", file=sys.stderr)
         raise SystemExit(1) from error

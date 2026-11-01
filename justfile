@@ -80,11 +80,18 @@ python-lint:
 python-unit:
     uv run --locked python -m unittest discover -s clients/python -p 'test_*.py'
 
-# Run Python static checks and SDK tests without a server.
-python-check: python-lint python-unit
+# Run Python 3.14 unit tests with line and branch coverage; optionally pass unittest arguments.
+python-test *args:
+    uv run --locked python -m coverage run -m unittest discover -s clients/python -p 'test_*.py' "$@"
+    uv run --locked python -m coverage report
+
+alias python-coverage := python-test
+
+# Run Python static checks and unit tests with coverage (no server needed).
+python-check: python-lint python-test
 
 # Test Pyomo conversion and Python interoperability (requires a running server).
-python-test: python-unit
+python-integration: python-test
     uv run --locked python clients/python/smoke_test.py
 
 # Build the local container image; optionally pass Docker build options.
