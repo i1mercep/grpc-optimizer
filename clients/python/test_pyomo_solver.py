@@ -64,7 +64,7 @@ class FakeSessionCall:
     def __init__(self, requests, timeout=None, metadata=()):
         self.requests = requests
         self.timeout = timeout
-        self.model = pb.LinearProgram()
+        self.model = pb.Problem()
         self.started = False
         self.inputs = []
         self.cancelled = False
@@ -136,6 +136,14 @@ class SolverTests(unittest.TestCase):
         self.assertTrue(result.has_solution)
         self.assertFalse(result.solution_loaded)
 
+    def test_quadratic_objective_is_restored_with_offset(self):
+        m = model()
+        m.objective.set_value(m.x**2 + m.x * m.y + 3 * m.y + m.fixed + 7)
+        with PyomoClient(channel=self.channel) as client:
+            result = client.solve(m)
+        self.assertEqual(result.objective, 62)
+        self.assertEqual(result.objective, pyo.value(m.objective))
+
     def test_all_nonoptimal_statuses_without_solution_preserve_values(self):
         for status in SolveStatus:
             if status == SolveStatus.OPTIMAL:
@@ -200,6 +208,82 @@ class SolverTests(unittest.TestCase):
                     client.solve(m)
                 self.assertEqual((pyo.value(m.x), pyo.value(m.y)), (1, 2))
 
+    def dual_response(self, constraint_duals=(1.5,), reduced_costs=(0.0, -2.0)):
+        def respond(request, **_kwargs):
+            return pb.SolveResult(
+                request_id=request.request_id,
+                status=pb.SOLVE_STATUS_OPTIMAL,
+                solution=pb.Solution(
+                    objective=13,
+                    variable_values=[4, 5],
+                    dual=pb.DualSolution(constraint_duals=constraint_duals, reduced_costs=reduced_costs),
+                ),
+            )
+
+        self.stub.Solve.side_effect = respond
+
+    def test_duals_and_reduced_costs_load_into_import_suffixes(self):
+        self.dual_response()
+        m = session_model()
+        m.dual = pyo.Suffix(direction=pyo.Suffix.IMPORT)
+        m.rc = pyo.Suffix(direction=pyo.Suffix.IMPORT)
+        with PyomoClient(channel=self.channel) as client:
+            result = client.solve(m, diagnostics=True)
+        self.assertTrue(result.duals_loaded)
+        self.assertEqual(m.dual[m.capacity], 1.5)
+        self.assertEqual((m.rc[m.x], m.rc[m.y]), (0.0, -2.0))
+
+    def test_reduced_costs_alone_report_duals_loaded(self):
+        self.dual_response()
+        m = session_model()
+        m.rc = pyo.Suffix(direction=pyo.Suffix.IMPORT)
+        with PyomoClient(channel=self.channel) as client:
+            result = client.solve(m, diagnostics=True)
+        self.assertTrue(result.duals_loaded)
+        self.assertEqual((m.rc[m.x], m.rc[m.y]), (0.0, -2.0))
+
+    def test_duals_are_skipped_without_suffix_or_when_loading_is_disabled(self):
+        self.dual_response()
+        m = session_model()
+        with PyomoClient(channel=self.channel) as client:
+            self.assertFalse(client.solve(m).duals_loaded)
+            m.dual = pyo.Suffix(direction=pyo.Suffix.EXPORT)
+            self.assertFalse(client.solve(m).duals_loaded)
+            m.del_component(m.dual)
+            m.dual = pyo.Suffix(direction=pyo.Suffix.IMPORT)
+            self.assertFalse(client.solve(m, load_solution=False).duals_loaded)
+        self.assertEqual(len(m.dual), 0)
+
+    def test_stale_duals_are_cleared_when_response_has_none(self):
+        m = session_model()
+        m.dual = pyo.Suffix(direction=pyo.Suffix.IMPORT)
+        m.dual[m.capacity] = 9.0
+        self.stub.Solve.side_effect = lambda request, **_: pb.SolveResult(
+            request_id=request.request_id,
+            status=pb.SOLVE_STATUS_OPTIMAL,
+            solution=pb.Solution(objective=13, variable_values=[4, 5]),
+        )
+        with PyomoClient(channel=self.channel) as client:
+            result = client.solve(m)
+        self.assertFalse(result.duals_loaded)
+        self.assertEqual(len(m.dual), 0)
+
+    def test_malformed_duals_raise_without_updating_model(self):
+        cases = {
+            "constraint count": {"constraint_duals": (1.0, 2.0)},
+            "reduced cost count": {"reduced_costs": (1.0,)},
+            "nonfinite": {"constraint_duals": (math.nan,)},
+        }
+        for name, kwargs in cases.items():
+            with self.subTest(case=name):
+                self.dual_response(**kwargs)
+                m = session_model()
+                m.dual = pyo.Suffix(direction=pyo.Suffix.IMPORT)
+                with PyomoClient(channel=self.channel) as client, self.assertRaises(ProtocolError):
+                    client.solve(m)
+                self.assertEqual((pyo.value(m.x), pyo.value(m.y)), (1, 2))
+                self.assertEqual(len(m.dual), 0)
+
     def test_invalid_model_and_options_fail_before_rpc(self):
         with PyomoClient(channel=self.channel) as client:
             for value in (0, -1, math.inf, math.nan):
@@ -210,7 +294,7 @@ class SolverTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 client.solve(model(), request_id="")
             m = model()
-            m.objective.set_value(m.x**2)
+            m.objective.set_value(m.x**3)
             with self.assertRaisesRegex(ValueError, "linear"):
                 client.solve(m)
         self.stub.Solve.assert_not_called()
@@ -327,6 +411,21 @@ class SolverTests(unittest.TestCase):
         self.assertEqual(len(calls[0].inputs), 2)
         self.assertIsNone(calls[0].timeout)
         optimizer.close()
+
+    def test_optimizer_rejects_quadratic_changes_but_accepts_linear_ones(self):
+        m = session_model()
+        m.risk = pyo.Param(initialize=1, mutable=True)
+        m.objective.set_value(m.price * m.x + 2 * m.y + 7 - m.risk * m.x**2)
+        optimizer, calls = self.open_optimizer(m)
+        with optimizer:
+            optimizer.solve()
+            m.price = 4
+            optimizer.solve()
+            m.risk = 2
+            with self.assertRaisesRegex(ValueError, "quadratic"):
+                optimizer.solve()
+        self.assertEqual(list(calls[0].model.quadratic_coefficients), [-1])
+        self.assertEqual(list(calls[0].inputs[1].objective_values), [4])
 
     def test_rpc_failure_closes_optimizer_and_owned_channel(self):
         with patch("grpc_optimizer.client.grpc.insecure_channel", return_value=self.channel):

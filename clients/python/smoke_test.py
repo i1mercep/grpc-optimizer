@@ -65,6 +65,18 @@ async def check_pyomo(target: str) -> None:
 
     await asyncio.to_thread(check_sync_reuse)
 
+    # Projecting (1, 2) onto x + y <= 2 checks Hessian scaling and the objective offset.
+    qp = pyo.ConcreteModel()
+    qp.x = pyo.Var()
+    qp.y = pyo.Var()
+    qp.distance = pyo.Objective(expr=(qp.x - 1) ** 2 + (qp.y - 2) ** 2)
+    qp.budget = pyo.Constraint(expr=qp.x + qp.y <= 2)
+    result = await solve_async(qp, endpoint=target, access_token=ACCESS_TOKEN)
+    assert result.is_optimal and result.objective is not None, result
+    assert math.isclose(result.objective, 0.5, abs_tol=1e-6)
+    assert math.isclose(pyo.value(qp.x), 0.5, abs_tol=1e-6)
+    assert math.isclose(pyo.value(qp.y), 1.5, abs_tol=1e-6)
+
 
 def session_model():
     """Build the production LP with machine hours as a mutable parameter."""

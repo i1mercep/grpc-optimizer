@@ -21,7 +21,7 @@ taking precedence. Directly launched binaries do not load `.env`.
 | `OPT_MAX_TIME_LIMIT_SECONDS` | `300` | Maximum solver time budget |
 | `OPT_MAX_VARIABLES` | `100000` | Variables per model |
 | `OPT_MAX_CONSTRAINTS` | `100000` | Constraint rows per model |
-| `OPT_MAX_NONZEROS` | `1000000` | Stored coefficients per model |
+| `OPT_MAX_NONZEROS` | `1000000` | Stored constraint and quadratic objective coefficients per model |
 
 CPU settings must satisfy `concurrent solves × solver threads ≤ CPU budget`.
 The default solve concurrency is the integer quotient of budget and threads.
@@ -62,6 +62,12 @@ Interruption is cooperative. Presolve, factorization, and native work between
 callbacks can delay it; callbacks and solver time limits do not impose a hard
 execution cutoff. The execution permit remains held until the blocking worker
 finishes native cleanup, even if the async caller has already disappeared.
+
+The HiGHS active-set QP solver has no interrupt callbacks. A QP stops at its
+solver time limit, which already includes the remaining RPC deadline; client
+cancellation takes effect only when it returns. That solver also fails when its
+null space (variables minus active bounds and constraints) exceeds 4000, and the
+server reports such native execution failures as `INTERNAL`.
 
 On shutdown, the server marks health as not-serving, stops admissions and stream
 input, and waits for admitted native work to finish. Jobs in terminated streams

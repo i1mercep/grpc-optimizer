@@ -23,8 +23,7 @@ use crate::{
     engine::{Engine, WarmSlot},
     model::{self, Error},
     pb::{
-        JobError, JobOutcome, LinearProgram, SessionRequest, SolveRequest, SolveResult,
-        job_outcome,
+        JobError, JobOutcome, Problem, SessionRequest, SolveRequest, SolveResult, job_outcome,
         optimizer_server::{Optimizer, OptimizerServer},
         session_request,
     },
@@ -56,7 +55,7 @@ fn session_jobs(
     input: BoxStream<'static, Result<SessionRequest, Status>>,
     engine: Engine,
 ) -> BoxStream<'static, Result<Job, Status>> {
-    let mut base: Option<(LinearProgram, WarmSlot)> = None;
+    let mut base: Option<(Problem, WarmSlot)> = None;
     input
         .filter_map(move |item| {
             let job = item.and_then(|message| match message.kind {

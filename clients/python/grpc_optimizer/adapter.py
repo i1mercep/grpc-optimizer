@@ -1,6 +1,7 @@
-"""Convert a continuous linear Pyomo model to the optimizer's protobuf format."""
+"""Convert a continuous Pyomo model with a linear or quadratic objective to the optimizer's protobuf format."""
 
 import math
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
 
@@ -16,6 +17,8 @@ class PreparedModel:
     request: pb.SolveRequest
     variables: tuple[Any, ...]
     objective_constant: float
+    constraints: tuple[Any, ...] = ()
+    model: Any = None
 
 
 def _number(value: Any, name: str) -> float:
@@ -31,6 +34,14 @@ def _linear(expression: Any, name: str) -> Any:
     repn = generate_standard_repn(expression)
     if not repn.is_linear():
         raise ValueError(f"{name} must be linear")
+    return repn
+
+
+def _quadratic(expression: Any, name: str) -> Any:
+    """Expand an expression like _linear, but keep terms of degree two."""
+    repn = generate_standard_repn(expression, quadratic=True)
+    if repn.nonlinear_expr is not None:
+        raise ValueError(f"{name} must be linear or quadratic")
     return repn
 
 
@@ -65,9 +76,9 @@ def prepare_model(model: Any, request_id: str) -> PreparedModel:
     if len(objectives) != 1:
         raise ValueError("exactly one active objective is required")
     objective = objectives[0]
-    repn = _linear(objective.expr, objective.name)
+    repn = _quadratic(objective.expr, objective.name)
     objective_constant = _number(repn.constant, f"{objective.name} constant")
-    lp = pb.LinearProgram(
+    problem = pb.Problem(
         sense=(pb.OBJECTIVE_SENSE_MINIMIZE if objective.sense == pyo.minimize else pb.OBJECTIVE_SENSE_MAXIMIZE)
     )
 
@@ -87,7 +98,7 @@ def prepare_model(model: Any, request_id: str) -> PreparedModel:
             continue
         indices[var] = len(variables)
         variables.append(var)
-        lp.variables.add(lower=lower, upper=upper)
+        problem.variables.add(lower=lower, upper=upper)
     if not variables:
         raise ValueError("at least one unfixed variable is required")
 
@@ -97,12 +108,24 @@ def prepare_model(model: Any, request_id: str) -> PreparedModel:
         return indices[var]
 
     for var, coefficient in zip(repn.linear_vars, repn.linear_coefs, strict=True):
-        lp.variables[index(var)].objective = _number(coefficient, objective.name)
+        problem.variables[index(var)].objective = _number(coefficient, objective.name)
+    # The wire format allows each unordered pair once, so merge x*y with y*x.
+    terms: defaultdict[tuple[int, int], float] = defaultdict(float)
+    for (first, second), coefficient in zip(repn.quadratic_vars, repn.quadratic_coefs, strict=True):
+        i, j = index(first), index(second)
+        terms[min(i, j), max(i, j)] += _number(coefficient, objective.name)
+    for (row, column), coefficient in sorted(terms.items()):
+        if coefficient:
+            problem.quadratic_rows.append(row)
+            problem.quadratic_columns.append(column)
+            problem.quadratic_coefficients.append(coefficient)
 
+    constraints = []
     for constraint in model.component_data_objects(pyo.Constraint, active=True):
         repn = _linear(constraint.body, constraint.name)
         constant = _number(repn.constant, f"{constraint.name} constant")
-        row = lp.constraints.add()
+        constraints.append(constraint)
+        row = problem.constraints.add()
         for var, coefficient in zip(repn.linear_vars, repn.linear_coefs, strict=True):
             row.indices.append(index(var))
             row.coefficients.append(_number(coefficient, constraint.name))
@@ -111,7 +134,13 @@ def prepare_model(model: Any, request_id: str) -> PreparedModel:
         if constraint.upper is not None:
             row.upper = _number(pyo.value(constraint.upper) - constant, f"{constraint.name} upper bound")
 
-    return PreparedModel(pb.SolveRequest(request_id=request_id, model=lp), tuple(variables), objective_constant)
+    return PreparedModel(
+        pb.SolveRequest(request_id=request_id, model=problem),
+        tuple(variables),
+        objective_constant,
+        constraints=tuple(constraints),
+        model=model,
+    )
 
 
 def _bounds(message: Any) -> tuple[float | None, float | None]:
@@ -121,16 +150,22 @@ def _bounds(message: Any) -> tuple[float | None, float | None]:
     )
 
 
-def session_input(base: pb.LinearProgram, request: pb.SolveRequest) -> pb.SolveInput:
+def session_input(base: pb.Problem, request: pb.SolveRequest) -> pb.SolveInput:
     """Encode a request as overrides of the base model, rejecting structural changes.
 
-    Only objective coefficients, variable bounds, and constraint bounds may differ.
+    Only linear objective coefficients, variable bounds, and constraint bounds may differ.
     """
     model = request.model
     if model.sense != base.sense:
         raise ValueError("objective sense changed; create a new optimizer")
     if len(model.variables) != len(base.variables) or len(model.constraints) != len(base.constraints):
         raise ValueError("variable or constraint count changed; create a new optimizer")
+    if (model.quadratic_rows, model.quadratic_columns, model.quadratic_coefficients) != (
+        base.quadratic_rows,
+        base.quadratic_columns,
+        base.quadratic_coefficients,
+    ):
+        raise ValueError("quadratic objective changed; create a new optimizer")
     job = pb.SolveInput(request_id=request.request_id, diagnostics=request.diagnostics)
     if request.HasField("time_limit_seconds"):
         job.time_limit_seconds = request.time_limit_seconds

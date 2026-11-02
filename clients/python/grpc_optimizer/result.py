@@ -3,8 +3,11 @@
 import math
 from dataclasses import dataclass, field
 from enum import IntEnum
+from itertools import chain
+from typing import Any
 
 import grpc
+import pyomo.environ as pyo
 
 from ._generated.optimization.v1 import optimizer_pb2 as pb
 from .adapter import PreparedModel
@@ -47,10 +50,48 @@ class SolveResult:
     solution_loaded: bool
     solver_status: str
     raw: pb.SolveResult = field(repr=False, compare=False)
+    duals_loaded: bool = False
 
     @property
     def is_optimal(self) -> bool:
         return self.status == SolveStatus.OPTIMAL
+
+
+def _import_suffix(model: Any, name: str) -> Any:
+    """Return the model's active import Suffix with this name, if declared."""
+    suffix = model.component(name) if model is not None else None
+    if isinstance(suffix, pyo.Suffix) and suffix.active and suffix.import_enabled():
+        return suffix
+    return None
+
+
+def _check_dual(prepared: PreparedModel, dual: pb.DualSolution) -> None:
+    if len(dual.constraint_duals) != len(prepared.constraints):
+        raise ProtocolError("constraint dual count does not match the submitted model")
+    if len(dual.reduced_costs) not in (0, len(prepared.variables)):
+        raise ProtocolError("reduced cost count does not match the submitted model")
+    if not all(math.isfinite(value) for value in chain(dual.constraint_duals, dual.reduced_costs)):
+        raise ProtocolError("dual solution contains nonfinite values")
+
+
+def _load_duals(prepared: PreparedModel, solution: pb.Solution) -> bool:
+    """Replace values in the model's `dual` and `rc` import suffixes; return whether duals were loaded."""
+    duals = _import_suffix(prepared.model, "dual")
+    reduced_costs = _import_suffix(prepared.model, "rc")
+    for suffix in (duals, reduced_costs):
+        if suffix is not None:
+            suffix.clear()
+    if not solution.HasField("dual"):
+        return False
+    if duals is not None:
+        for constraint, value in zip(prepared.constraints, solution.dual.constraint_duals, strict=True):
+            duals[constraint] = value
+    if reduced_costs is not None and solution.dual.reduced_costs:
+        for var, value in zip(prepared.variables, solution.dual.reduced_costs, strict=True):
+            reduced_costs[var] = value
+    return (duals is not None and bool(solution.dual.constraint_duals)) or (
+        reduced_costs is not None and bool(solution.dual.reduced_costs)
+    )
 
 
 def finish_solve(prepared: PreparedModel, response: pb.SolveResult, *, load_solution: bool) -> SolveResult:
@@ -69,17 +110,25 @@ def finish_solve(prepared: PreparedModel, response: pb.SolveResult, *, load_solu
     if status == SolveStatus.OPTIMAL and not has_solution:
         raise ProtocolError("optimal response is missing its solution")
     objective = None
+    duals_loaded = False
     if has_solution:
         values = tuple(response.solution.variable_values)
         if len(values) != len(prepared.variables):
             raise ProtocolError("solution variable count does not match the submitted model")
         if not all(math.isfinite(value) for value in values) or not math.isfinite(response.solution.objective):
             raise ProtocolError("solution contains nonfinite values")
+        if response.solution.HasField("dual"):
+            _check_dual(prepared, response.solution.dual)
         # Evaluate the captured objective even when loading is disabled. This
         # includes constants and fixed variables omitted from the wire format.
+        model = prepared.request.model
+        quadratic = zip(model.quadratic_rows, model.quadratic_columns, model.quadratic_coefficients, strict=True)
         objective = math.fsum(
-            [prepared.objective_constant]
-            + [var.objective * value for var, value in zip(prepared.request.model.variables, values, strict=True)]
+            chain(
+                (prepared.objective_constant,),
+                (var.objective * value for var, value in zip(model.variables, values, strict=True)),
+                (coefficient * values[row] * values[column] for row, column, coefficient in quadratic),
+            )
         )
         if not math.isfinite(objective):
             raise ProtocolError("solution objective is nonfinite")
@@ -88,6 +137,7 @@ def finish_solve(prepared: PreparedModel, response: pb.SolveResult, *, load_solu
         if load_solution:
             for var, value in zip(prepared.variables, values, strict=True):
                 var.set_value(value, skip_validation=True)
+            duals_loaded = _load_duals(prepared, response.solution)
     return SolveResult(
         request_id=response.request_id,
         status=status,
@@ -96,6 +146,7 @@ def finish_solve(prepared: PreparedModel, response: pb.SolveResult, *, load_solu
         solution_loaded=has_solution and load_solution,
         solver_status=response.solver_status,
         raw=response,
+        duals_loaded=duals_loaded,
     )
 
 

@@ -1,7 +1,7 @@
 [project]
 name = "grpc-optimizer-clients"
 version = "0.1.0"
-description = "Solve Pyomo linear models through grpc-optimizer"
+description = "Solve Pyomo linear and convex quadratic models through grpc-optimizer"
 requires-python = ">=3.14,<3.15"
 dependencies = [
     "click>=8.5.0",

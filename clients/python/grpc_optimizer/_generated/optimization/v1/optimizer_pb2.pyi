@@ -62,14 +62,20 @@ class Constraint(_message.Message):
     def __init__(self, indices: _Optional[_Iterable[int]] = ..., coefficients: _Optional[_Iterable[float]] = ..., lower: _Optional[float] = ..., upper: _Optional[float] = ...) -> None: ...
 
 class LinearProgram(_message.Message):
-    __slots__ = ("sense", "variables", "constraints")
+    __slots__ = ("sense", "variables", "constraints", "quadratic_rows", "quadratic_columns", "quadratic_coefficients")
     SENSE_FIELD_NUMBER: _ClassVar[int]
     VARIABLES_FIELD_NUMBER: _ClassVar[int]
     CONSTRAINTS_FIELD_NUMBER: _ClassVar[int]
+    QUADRATIC_ROWS_FIELD_NUMBER: _ClassVar[int]
+    QUADRATIC_COLUMNS_FIELD_NUMBER: _ClassVar[int]
+    QUADRATIC_COEFFICIENTS_FIELD_NUMBER: _ClassVar[int]
     sense: ObjectiveSense
     variables: _containers.RepeatedCompositeFieldContainer[Variable]
     constraints: _containers.RepeatedCompositeFieldContainer[Constraint]
-    def __init__(self, sense: _Optional[_Union[ObjectiveSense, str]] = ..., variables: _Optional[_Iterable[_Union[Variable, _Mapping]]] = ..., constraints: _Optional[_Iterable[_Union[Constraint, _Mapping]]] = ...) -> None: ...
+    quadratic_rows: _containers.RepeatedScalarFieldContainer[int]
+    quadratic_columns: _containers.RepeatedScalarFieldContainer[int]
+    quadratic_coefficients: _containers.RepeatedScalarFieldContainer[float]
+    def __init__(self, sense: _Optional[_Union[ObjectiveSense, str]] = ..., variables: _Optional[_Iterable[_Union[Variable, _Mapping]]] = ..., constraints: _Optional[_Iterable[_Union[Constraint, _Mapping]]] = ..., quadratic_rows: _Optional[_Iterable[int]] = ..., quadratic_columns: _Optional[_Iterable[int]] = ..., quadratic_coefficients: _Optional[_Iterable[float]] = ...) -> None: ...
 
 class SolveRequest(_message.Message):
     __slots__ = ("request_id", "model", "diagnostics", "time_limit_seconds")
@@ -192,3 +198,5 @@ class JobOutcome(_message.Message):
     result: SolveResult
     error: JobError
     def __init__(self, request_id: _Optional[str] = ..., result: _Optional[_Union[SolveResult, _Mapping]] = ..., error: _Optional[_Union[JobError, _Mapping]] = ...) -> None: ...
+
+Problem = LinearProgram

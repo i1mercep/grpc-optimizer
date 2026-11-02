@@ -2,15 +2,15 @@
 
 use std::{ops::Bound, time::Instant};
 
-use highs::{HighsModelStatus, HighsSolutionStatus, Model, RowProblem, Sense};
+use highs::{HessianFormat, HighsModelStatus, HighsSolutionStatus, Model, RowProblem, Sense};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     config::Config,
     model::{self, Error, Result},
     pb::{
-        DualSolution, LinearProgram, ObjectiveSense, Solution, SolveRequest, SolveResult,
-        SolveStatus, Timings,
+        DualSolution, ObjectiveSense, Problem, Solution, SolveRequest, SolveResult, SolveStatus,
+        Timings,
     },
 };
 
@@ -21,7 +21,7 @@ mod warm;
 pub(crate) use interrupt::TestControl;
 pub(crate) use warm::WarmModel;
 
-/// Validates and solves one continuous LP on the calling thread.
+/// Validates and solves one continuous LP or convex QP on the calling thread.
 ///
 /// Requires validated configuration and a blocking worker; this entry point does not
 /// enforce concurrency limits. The solver budget is capped by configuration and the
@@ -62,6 +62,7 @@ pub(crate) fn solve_inner(
     let validation_seconds = start.elapsed().as_secs_f64();
     let build_start = Instant::now();
     let input = request.model.as_ref().expect("validated model");
+    let quadratic = input.is_quadratic();
     let model = match warm.and_then(warm::take) {
         Some(reused) if reused.compatible(input) => reused.refresh(input)?,
         Some(rejected) => {
@@ -112,7 +113,9 @@ pub(crate) fn solve_inner(
         let dual_feasible = solved
             .int_info_value(c"dual_solution_status")
             .map_err(|s| Error::Internal(format!("HiGHS dual status: {s:?}")))?
-            == HighsSolutionStatus::Feasible as i64;
+            == HighsSolutionStatus::Feasible as i64
+            // After a QP limit HiGHS can report stale duals as feasible.
+            && (!quadratic || status == SolveStatus::Optimal);
         Some(Solution {
             objective: solved.objective_value(),
             variable_values: values.columns().to_vec(),
@@ -164,7 +167,8 @@ pub(crate) fn solve_inner(
 }
 
 /// Builds a quiet native model with the configured thread settings.
-fn build(input: &LinearProgram, config: &Config) -> Result<Model> {
+fn build(input: &Problem, config: &Config) -> Result<Model> {
+    model::validate_curvature(input)?;
     let mut problem = RowProblem::new();
     let columns: Vec<_> = input
         .variables
@@ -189,6 +193,11 @@ fn build(input: &LinearProgram, config: &Config) -> Result<Model> {
         .try_optimise(sense)
         .map_err(|s| Error::Invalid(format!("HiGHS rejected model: {s:?}")))?;
     native.make_quiet();
+    if input.is_quadratic() {
+        native
+            .try_pass_hessian(HessianFormat::Triangular, hessian(input))
+            .map_err(|e| Error::Invalid(format!("HiGHS rejected quadratic objective: {e}")))?;
+    }
     native
         .try_set_option("threads", config.solver_threads as i32)
         .map_err(|e| Error::Internal(format!("HiGHS threads: {e:?}")))?;
@@ -212,6 +221,21 @@ fn range(lower: Option<f64>, upper: Option<f64>) -> (Bound<f64>, Bound<f64>) {
     )
 }
 
+/// Converts validated terms `q * x_i * x_j` into lower-triangle columns of HiGHS's
+/// `0.5 * x'Qx`, so diagonal entries double.
+fn hessian(input: &Problem) -> Vec<Vec<(u32, f64)>> {
+    let mut columns = vec![Vec::new(); input.variables.len()];
+    let pairs = std::iter::zip(&input.quadratic_rows, &input.quadratic_columns);
+    for ((&i, &j), &q) in pairs.zip(&input.quadratic_coefficients) {
+        let value = if i == j { 2.0 * q } else { q };
+        columns[i.min(j) as usize].push((i.max(j), value));
+    }
+    for column in &mut columns {
+        column.sort_unstable_by_key(|&(row, _)| row);
+    }
+    columns
+}
+
 /// Checks the RPC budget between native phases, giving cancellation precedence over expiry.
 pub(crate) fn check_budget(deadline: Option<Instant>, cancel: &CancellationToken) -> Result<()> {
     if cancel.is_cancelled() {
@@ -223,7 +247,7 @@ pub(crate) fn check_budget(deadline: Option<Instant>, cancel: &CancellationToken
     Ok(())
 }
 
-/// Preserves mathematical outcomes and limits, but turns native failures into service errors.
+/// Preserves mathematical outcomes and limits, but turns native failures into errors.
 fn status(status: HighsModelStatus) -> Result<SolveStatus> {
     use HighsModelStatus as H;
     Ok(match status {
@@ -319,6 +343,29 @@ mod tests {
         ] {
             assert_eq!(status(input).unwrap(), expected);
         }
-        assert!(status(HighsModelStatus::SolveError).is_err());
+        for failure in [
+            HighsModelStatus::LoadError,
+            HighsModelStatus::ModelError,
+            HighsModelStatus::PresolveError,
+            HighsModelStatus::SolveError,
+            HighsModelStatus::PostsolveError,
+        ] {
+            assert!(matches!(status(failure), Err(Error::Internal(_))));
+        }
+    }
+
+    #[test]
+    fn hessian_is_a_lower_triangle_with_doubled_diagonal() {
+        let input = Problem {
+            variables: vec![Default::default(); 3],
+            quadratic_rows: vec![1, 2, 0],
+            quadratic_columns: vec![2, 0, 0],
+            quadratic_coefficients: vec![3.0, -1.0, 1.5],
+            ..Default::default()
+        };
+        assert_eq!(
+            hessian(&input),
+            vec![vec![(0, 3.0), (2, -1.0)], vec![(2, 3.0)], vec![]]
+        );
     }
 }

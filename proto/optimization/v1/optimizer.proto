@@ -29,10 +29,18 @@ message Constraint {
   optional double upper = 4;
 }
 
+// Linear constraints with a linear objective plus optional quadratic terms.
+// The legacy wire name is retained for generated-client compatibility.
 message LinearProgram {
   ObjectiveSense sense = 1;
   repeated Variable variables = 2;
   repeated Constraint constraints = 3;
+  // Parallel packed arrays; the objective adds coefficients[k] * x[rows[k]] * x[columns[k]].
+  // Each unordered index pair may occur only once. The quadratic part must be convex
+  // when minimizing and concave when maximizing.
+  repeated uint32 quadratic_rows = 4;
+  repeated uint32 quadratic_columns = 5;
+  repeated double quadratic_coefficients = 6;
 }
 
 message SolveRequest {
@@ -46,7 +54,7 @@ message SolveRequest {
 
 message SessionRequest {
   oneof kind {
-    // Required as the first message and allowed only once.
+    // Required as the first message and allowed only once. Quadratic terms stay fixed.
     LinearProgram model = 1;
     SolveInput input = 2;
   }
@@ -96,6 +104,7 @@ message Solution {
 
 message DualSolution {
   repeated double constraint_duals = 1;
+  // Objective gradient minus A^T * constraint_duals; the gradient includes quadratic terms.
   repeated double reduced_costs = 2;
 }
 

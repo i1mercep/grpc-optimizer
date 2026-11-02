@@ -263,7 +263,7 @@ class PyomoClient:
         request_id: str | None = None,
         load_solution: bool = True,
     ) -> SolveResult:
-        """Send a continuous LP and load any feasible solution into its variables.
+        """Send a continuous LP or convex QP and load any feasible solution into its variables.
 
         timeout covers the RPC, including connection and queueing. time_limit
         optionally limits solver time. RPC failures propagate as grpc.RpcError;
@@ -355,7 +355,7 @@ def solve(
     request_id: str | None = None,
     load_solution: bool = True,
 ) -> SolveResult:
-    """Solve a continuous LP with a temporary channel, optionally loading its solution."""
+    """Solve a continuous LP or convex QP with a temporary channel, optionally loading its solution."""
     with PyomoClient(endpoint, access_token=access_token, tls=tls) as client:
         return client.solve(
             model,

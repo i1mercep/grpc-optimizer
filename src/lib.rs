@@ -1,4 +1,5 @@
-//! Continuous LP solving with bounded native workers over unary and bidirectional gRPC.
+//! Continuous LP and convex QP solving with bounded native workers over unary and
+//! bidirectional gRPC.
 //!
 //! Use [`engine::Engine`] for admission control and async execution; [`solver::solve`]
 //! is the synchronous entry point for callers that manage their own worker capacity.
@@ -14,6 +15,8 @@ pub mod solver;
 /// Generated wire types, client/server bindings, and the reflection descriptor.
 pub mod pb {
     tonic::include_proto!("optimization.v1");
+    /// Unified LP/QP model; the protobuf name remains compatible with existing clients.
+    pub type Problem = LinearProgram;
     /// Encoded protobuf descriptor set used by the server's reflection service.
     pub const DESCRIPTOR: &[u8] = tonic::include_file_descriptor_set!("optimizer");
 }

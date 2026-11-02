@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::pb::{Constraint, LinearProgram, ObjectiveSense, SolveRequest, Variable};
+use crate::pb::{Constraint, ObjectiveSense, Problem, SolveRequest, Variable};
 
 /// A portable JSON fixture with optional expected solution values for verification.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,6 +23,7 @@ pub fn fixtures() -> Vec<Sample> {
         include_str!("../examples/models/blending.json"),
         include_str!("../examples/models/infeasible.json"),
         include_str!("../examples/models/unbounded.json"),
+        include_str!("../examples/models/quadratic.json"),
     ]
     .into_iter()
     .map(|s| serde_json::from_str(s).expect("valid embedded fixture"))
@@ -51,7 +52,7 @@ pub enum Family {
 pub fn generate(family: Family, size: usize, seed: u64) -> anyhow::Result<SolveRequest> {
     anyhow::ensure!(size > 0, "size must be positive");
     let mut rng = Generator(seed);
-    let mut model = LinearProgram {
+    let mut model = Problem {
         sense: ObjectiveSense::Minimize as i32,
         ..Default::default()
     };

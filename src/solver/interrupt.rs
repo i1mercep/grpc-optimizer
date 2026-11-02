@@ -113,7 +113,7 @@ pub(super) fn solve(
             // A deadline may expire in presolve or near normal completion,
             // without HiGHS ever reaching an interrupt callback.
             super::check_budget(deadline, cancel)?;
-            result.map_err(|s| Error::Internal(format!("HiGHS solve failed: {s:?}")))
+            result.map_err(|status| Error::Internal(format!("HiGHS solve failed: {status:?}")))
         })()
     }?;
     Ok(Solved {

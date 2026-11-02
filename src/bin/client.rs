@@ -23,7 +23,7 @@ enum Mode {
 }
 
 #[derive(Parser)]
-#[command(about = "Solve sample or generated continuous LPs over gRPC")]
+#[command(about = "Solve sample or generated continuous LPs and QPs over gRPC")]
 struct Args {
     #[arg(long, env = "OPT_ENDPOINT", default_value = "http://127.0.0.1:50051")]
     endpoint: String,

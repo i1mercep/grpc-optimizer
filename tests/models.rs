@@ -4,7 +4,7 @@ use grpc_optimizer::{
     config::Config,
     engine::Engine,
     model::{self, Error},
-    pb::{BoundOverride, SolveInput, SolveRequest, SolveStatus},
+    pb::{BoundOverride, ObjectiveSense, Problem, SolveInput, SolveRequest, SolveStatus},
     samples::{self, Family},
     solver,
 };
@@ -17,18 +17,34 @@ fn assert_close(actual: f64, expected: f64) {
     );
 }
 
+/// Objective gradient `c + Qx` for terms `q * x_i * x_j`.
+fn gradient(model: &Problem, x: &[f64]) -> Vec<f64> {
+    let mut gradient: Vec<f64> = model.variables.iter().map(|v| v.objective).collect();
+    let pairs = std::iter::zip(&model.quadratic_rows, &model.quadratic_columns);
+    for ((&i, &j), &q) in pairs.zip(&model.quadratic_coefficients) {
+        gradient[i as usize] += q * x[j as usize];
+        gradient[j as usize] += q * x[i as usize];
+    }
+    gradient
+}
+
 fn check_solution(request: &SolveRequest, result: &grpc_optimizer::pb::SolveResult) {
     let Some(solution) = &result.solution else {
         return;
     };
     let model = request.model.as_ref().unwrap();
-    assert_eq!(solution.variable_values.len(), model.variables.len());
+    let x = &solution.variable_values;
+    assert_eq!(x.len(), model.variables.len());
     let mut objective = 0.0;
-    for (variable, &value) in model.variables.iter().zip(&solution.variable_values) {
+    for (variable, &value) in model.variables.iter().zip(x) {
         assert!(value.is_finite());
         assert!(value >= variable.lower.unwrap_or(f64::NEG_INFINITY) - 1e-6);
         assert!(value <= variable.upper.unwrap_or(f64::INFINITY) + 1e-6);
         objective += value * variable.objective;
+    }
+    let pairs = std::iter::zip(&model.quadratic_rows, &model.quadratic_columns);
+    for ((&i, &j), &q) in pairs.zip(&model.quadratic_coefficients) {
+        objective += q * x[i as usize] * x[j as usize];
     }
     assert_close(solution.objective, objective);
     for (i, row) in model.constraints.iter().enumerate() {
@@ -47,7 +63,7 @@ fn check_solution(request: &SolveRequest, result: &grpc_optimizer::pb::SolveResu
     if let Some(dual) = &solution.dual {
         assert_eq!(dual.reduced_costs.len(), model.variables.len());
         assert_eq!(dual.constraint_duals.len(), model.constraints.len());
-        for (j, var) in model.variables.iter().enumerate() {
+        for (j, gradient) in gradient(model, x).into_iter().enumerate() {
             let aty: f64 = model
                 .constraints
                 .iter()
@@ -61,7 +77,7 @@ fn check_solution(request: &SolveRequest, result: &grpc_optimizer::pb::SolveResu
                         .sum::<f64>()
                 })
                 .sum();
-            assert_close(var.objective - aty, dual.reduced_costs[j]);
+            assert_close(gradient - aty, dual.reduced_costs[j]);
         }
     }
 }
@@ -101,6 +117,18 @@ async fn fixtures_have_known_optima_feasibility_and_dual_stationarity() {
     }
     engine.shutdown();
     engine.drain().await;
+}
+
+#[test]
+fn legacy_linear_program_and_problem_names_are_compatible() {
+    let legacy: grpc_optimizer::pb::LinearProgram = samples::fixture("production")
+        .unwrap()
+        .request
+        .model
+        .unwrap();
+    let problem: Problem = legacy;
+    assert_eq!(problem.variables.len(), 2);
+    assert!(!problem.is_quadratic());
 }
 
 #[test]
@@ -159,6 +187,147 @@ fn validation_rejects_malformed_inputs_and_model_limits() {
             Err(Error::Exhausted(_))
         ));
     }
+}
+
+#[test]
+fn quadratic_validation_rejects_malformed_terms_and_negative_curvature() {
+    let config = Config::default();
+    let base = samples::fixture("quadratic").unwrap().request;
+    model::validate(&base, &config).unwrap();
+    type Mutation = Box<dyn Fn(&mut Problem)>;
+    let mutations: Vec<Mutation> = vec![
+        Box::new(|m| m.quadratic_rows.truncate(1)),
+        Box::new(|m| m.quadratic_columns[0] = 2),
+        Box::new(|m| m.quadratic_coefficients[1] = f64::NAN),
+        Box::new(|m| {
+            m.quadratic_rows.push(1);
+            m.quadratic_columns.push(0);
+            m.quadratic_coefficients.push(1.0);
+        }),
+        Box::new(|m| m.quadratic_coefficients[0] = -1.0),
+        Box::new(|m| m.sense = ObjectiveSense::Maximize as i32),
+    ];
+    for mutate in mutations {
+        let mut request = base.clone();
+        mutate(request.model.as_mut().unwrap());
+        assert!(matches!(
+            model::validate(&request, &config),
+            Err(Error::Invalid(_))
+        ));
+    }
+    let config = Config {
+        max_nonzeros: 4,
+        ..config
+    };
+    assert!(matches!(
+        model::validate(&base, &config),
+        Err(Error::Exhausted(_))
+    ));
+}
+
+#[test]
+fn bounded_indefinite_quadratic_objectives_are_invalid() {
+    for sense in [ObjectiveSense::Minimize, ObjectiveSense::Maximize] {
+        for cross in [-3.0, 3.0] {
+            let sign = if sense == ObjectiveSense::Minimize {
+                1.0
+            } else {
+                -1.0
+            };
+            let mut request = samples::fixture("quadratic").unwrap().request;
+            let model = request.model.as_mut().unwrap();
+            model.sense = sense as i32;
+            model.constraints.clear();
+            model.quadratic_coefficients = vec![sign, cross, sign];
+            for variable in &mut model.variables {
+                variable.objective = 0.0;
+                variable.lower = Some(-1.0);
+                variable.upper = Some(1.0);
+            }
+            let result =
+                solver::solve(request, &Config::default(), None, &CancellationToken::new());
+            assert!(matches!(result, Err(Error::Invalid(_))), "{result:?}");
+        }
+    }
+}
+
+#[test]
+fn coupled_quadratic_curvature_is_checked_beyond_variable_pairs() {
+    for (cross, valid) in [(-2.0, false), (2.0, true)] {
+        let mut request = samples::fixture("quadratic").unwrap().request;
+        let model = request.model.as_mut().unwrap();
+        model.variables.push(Default::default());
+        model.constraints.clear();
+        model.quadratic_rows = vec![0, 0, 0, 1, 1, 2];
+        model.quadratic_columns = vec![0, 1, 2, 1, 2, 2];
+        model.quadratic_coefficients = vec![1.0, 2.0, 2.0, 1.0, cross, 1.0];
+        for variable in &mut model.variables {
+            variable.objective = 0.0;
+            variable.lower = Some(-1.0);
+            variable.upper = Some(1.0);
+        }
+        let result = solver::solve(request, &Config::default(), None, &CancellationToken::new());
+        if valid {
+            assert_eq!(result.unwrap().status, SolveStatus::Optimal as i32);
+        } else {
+            assert!(matches!(result, Err(Error::Invalid(_))), "{result:?}");
+        }
+    }
+}
+
+#[test]
+fn mixed_scale_indefinite_quadratic_objective_is_invalid() {
+    let mut request = samples::fixture("quadratic").unwrap().request;
+    let model = request.model.as_mut().unwrap();
+    model.variables.push(Default::default());
+    model.constraints.clear();
+    model.quadratic_rows = vec![0, 1, 1, 2];
+    model.quadratic_columns = vec![0, 1, 2, 2];
+    model.quadratic_coefficients = vec![1e14, 1.0, 3.0, 1.0];
+    let result = solver::solve(request, &Config::default(), None, &CancellationToken::new());
+    assert!(matches!(result, Err(Error::Invalid(_))), "{result:?}");
+}
+
+#[test]
+fn semidefinite_quadratic_objectives_are_supported() {
+    for sense in [ObjectiveSense::Minimize, ObjectiveSense::Maximize] {
+        let sign = if sense == ObjectiveSense::Minimize {
+            1.0
+        } else {
+            -1.0
+        };
+        let mut request = samples::fixture("quadratic").unwrap().request;
+        let model = request.model.as_mut().unwrap();
+        model.sense = sense as i32;
+        model.quadratic_coefficients = vec![sign, 2.0 * sign, sign];
+        for variable in &mut model.variables {
+            variable.objective = -sign;
+            variable.lower = Some(-1.0);
+            variable.upper = Some(1.0);
+        }
+        let result = solver::solve(
+            request.clone(),
+            &Config::default(),
+            None,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert_eq!(result.status, SolveStatus::Optimal as i32);
+        check_solution(&request, &result);
+    }
+}
+
+#[test]
+fn indefinite_quadratic_objective_is_invalid() {
+    let mut request = samples::fixture("quadratic").unwrap().request;
+    let model = request.model.as_mut().unwrap();
+    // x^2 + y^2 - 3xy has negative curvature along the feasible line x = y.
+    model.quadratic_coefficients = vec![1.0, -3.0, 1.0];
+    model.constraints[0].coefficients = vec![1.0, -1.0];
+    model.constraints[0].lower = Some(0.0);
+    model.constraints[0].upper = Some(0.0);
+    let result = solver::solve(request, &Config::default(), None, &CancellationToken::new());
+    assert!(matches!(result, Err(Error::Invalid(_))), "{result:?}");
 }
 
 #[test]
@@ -273,6 +442,11 @@ fn generators_are_reproducible_and_solver_limit_is_observable() {
         check_solution(&request, &result);
     }
     let mut request = samples::generate(Family::Transportation, 100, 42).unwrap();
+    request.time_limit_seconds = Some(1e-12);
+    let result = solver::solve(request.clone(), &config, None, &CancellationToken::new()).unwrap();
+    assert_eq!(result.status, SolveStatus::TimeLimit as i32);
+    check_solution(&request, &result);
+    let mut request = samples::fixture("quadratic").unwrap().request;
     request.time_limit_seconds = Some(1e-12);
     let result = solver::solve(request.clone(), &config, None, &CancellationToken::new()).unwrap();
     assert_eq!(result.status, SolveStatus::TimeLimit as i32);

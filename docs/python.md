@@ -1,6 +1,7 @@
 # Python SDK
 
-Create a continuous linear Pyomo model, then call `solve(model)`:
+Create a continuous Pyomo model with a linear or convex quadratic objective, then
+call `solve(model)`:
 
 ```python
 from grpc_optimizer import solve
@@ -15,6 +16,16 @@ separate Python 3.14 project, use `uv add /path/to/grpc-optimizer`. Alternativel
 run `just python-build` and install the resulting wheel. Generated protobuf
 bindings ship inside the SDK; importing it needs no source checkout, `sys.path`
 changes, compiler, or stub generation.
+
+## Quadratic example
+
+With a server running, use `just python-pyomo-client --quadratic`. The example
+minimizes `(x - 1)**2 + (y - 2)**2` subject to `x + y <= 2` and nonnegative
+variables. It returns `x = 0.5`, `y = 1.5`, and objective `0.5`. Omitting the flag
+still runs the original production LP.
+
+Low-level clients can use either `pb.Problem` or the original `pb.LinearProgram`;
+both names refer to the same protobuf class and preserve the original wire name.
 
 ## Many models and async applications
 
@@ -68,10 +79,10 @@ with GrpcOptimizer(model, "server:50051") as optimizer:
 `solve()` accepts `time_limit`, `diagnostics`, `request_id`, and
 `load_solution`, with the same results as `solve`.
 
-- Change mutable `Param`s, variable bounds, constant terms, or objective
-  coefficients freely. Changing constraint coefficients, the objective sense, or
-  the set of active variables and constraints raises `ValueError` before
-  sending; create a new optimizer for the new structure.
+- Change mutable `Param`s, variable bounds, constant terms, or linear objective
+  coefficients freely. Changing constraint coefficients, quadratic objective
+  terms, the objective sense, or the set of active variables and constraints
+  raises `ValueError` before sending; create a new optimizer for the new structure.
 - Each solve still converts the whole model locally to find the changes; only
   the network message shrinks.
 - `timeout` covers the optimizer's whole call; the default `None` keeps it open
@@ -110,6 +121,13 @@ and requested diagnostics. Constraint activities and dual arrays follow active
 Pyomo constraint traversal order; reduced costs follow unfixed variable order.
 Wire activities omit expression constants; the raw objective omits its offset.
 
+When a solution is loaded, constraint duals are written into an active import
+`Suffix` named `dual` and reduced costs into one named `rc`, if the model declares
+them (`m.dual = pyo.Suffix(direction=pyo.Suffix.IMPORT)`). Previous suffix values
+are cleared first; `duals_loaded` reports whether constraint duals or reduced
+costs were written. Duals are
+returned only with `diagnostics=True` and when HiGHS reports dual feasibility.
+
 Invalid or unsupported models and invalid options raise `ValueError` before any
 RPC is sent. RPC failures propagate as `grpc.RpcError` (`grpc.aio.AioRpcError` in
 async code), preserving status codes and details. Infeasibility and solver limits
@@ -117,9 +135,13 @@ are ordinary results. Async cancellation propagates to the gRPC call.
 Malformed responses raise `ProtocolError`; the response ID, status, vector length,
 and finite values are checked before any variables are updated.
 
-The SDK supports one active linear objective, continuous variables, indexed and
-nested components, fixed-variable substitution, and equality/ranged constraints.
-Integer/binary, nonlinear, and unsupported active components are rejected.
+The SDK supports one active linear or quadratic objective, linear constraints,
+continuous variables, indexed and nested components, fixed-variable substitution,
+and equality/ranged constraints. Terms such as `x*y` and `y*x` are merged before
+sending. The quadratic part must be convex when minimizing and concave when
+maximizing; the server rejects other objectives with `INVALID_ARGUMENT`.
+Integer/binary, quadratic constraints, other nonlinear expressions, and
+unsupported active components are rejected.
 
 ## TLS and channel ownership
 
@@ -164,7 +186,7 @@ an injected channel raises `ValueError` because its owner controls transport.
 ## Architecture and maintenance
 
 The public API is exported from `grpc_optimizer.__init__`. `adapter.py` converts
-Pyomo expressions into the existing sparse LP contract and captures variable
+Pyomo expressions into the sparse protobuf contract and captures variable
 order and objective offsets. `adapter.py` also encodes `GrpcOptimizer` changes.
 `client.py` owns transport, channel, and call lifecycle.
 `result.py` validates responses and applies solutions. The server and protobuf

@@ -1,4 +1,4 @@
-"""Regenerate the SDK's vendored bindings from the unchanged wire contract."""
+"""Regenerate the SDK's vendored bindings and unified LP/QP model alias."""
 
 import subprocess
 import sys
@@ -41,6 +41,8 @@ def main() -> None:
             "'optimization.v1.optimizer_pb2'", "'grpc_optimizer._generated.optimization.v1.optimizer_pb2'"
         )
     )
+    for path in (module, module.with_suffix(".pyi")):
+        path.write_text(path.read_text() + "\nProblem = LinearProgram\n")
     for directory in (OUTPUT, OUTPUT / "optimization", package):
         (directory / "__init__.py").touch()
 

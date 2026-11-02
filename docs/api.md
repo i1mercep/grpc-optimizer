@@ -10,16 +10,16 @@ messages are unchanged.
 [Back to README](../README.md) · [Operations guide](operations.md)
 
 The [protobuf contract](../proto/optimization/v1/optimizer.proto) defines package
-`optimization.v1` and service `Optimizer`. Jobs carry a complete continuous LP
-model, except in a session, where the model is sent once per call.
+`optimization.v1` and service `Optimizer`. Jobs carry a complete continuous LP or
+convex QP model, except in a session, where the model is sent once per call.
 
 ## Choose a call pattern
 
 | CLI mode | RPC | Input | Output |
 | --- | --- | --- | --- |
-| `unary` | `Solve` | One LP | One result |
-| `bidi` | `SolveStream` | Open stream of LPs | Results in completion order |
-| `session` | `SolveSession` | One LP, then a stream of input values | Results in completion order |
+| `unary` | `Solve` | One model | One result |
+| `bidi` | `SolveStream` | Open stream of models | Results in completion order |
+| `session` | `SolveSession` | One model, then a stream of input values | Results in completion order |
 
 Use unary for simple request/response, and bidirectional streaming to submit many
 models over one call and receive each result as soon as it is solved. Use a
@@ -32,9 +32,14 @@ the behavior you need and benchmark your workload before assuming a speed gain.
 
 ## Build a model
 
-A `SolveRequest` contains a `request_id`, a `LinearProgram`, an optional
-`time_limit_seconds`, and a `diagnostics` flag. The LP contains an objective sense,
-continuous variables, and sparse constraint rows.
+A `SolveRequest` contains a `request_id`, a `Problem`, an optional
+`time_limit_seconds`, and a `diagnostics` flag. The problem contains an objective
+sense, continuous variables, sparse constraint rows, and optional quadratic
+objective terms.
+
+`Problem` is the Rust and Python SDK alias for the protobuf `LinearProgram`
+message. The original wire name, field numbers, and constructors remain valid
+for existing LP clients; both names support quadratic objectives.
 
 - Set the sense to minimize (`1`) or maximize (`2`). Unspecified sense is invalid.
 - Each variable has an objective coefficient and optional lower/upper bounds.
@@ -45,6 +50,22 @@ continuous variables, and sparse constraint rows.
 - Set equal lower and upper bounds for an equality constraint.
 - Coefficients and explicit bounds must be finite; lower bounds must not exceed
   upper bounds. A model must contain at least one variable.
+
+### Quadratic objectives
+
+The parallel arrays `quadratic_rows`, `quadratic_columns`, and
+`quadratic_coefficients` add `coefficient * x[row] * x[column]` to the objective.
+Write each term as it appears in the formula: `x² + 3xy` is rows `[0, 0]`,
+columns `[0, 1]`, coefficients `[1, 3]`. A pair may appear once in either order;
+`(0, 1)` and `(1, 0)` are the same term. Quadratic terms count toward the nonzero
+limit. Constraints stay linear.
+
+The quadratic part must be convex when minimizing and concave when maximizing.
+A diagonal coefficient of the wrong sign is rejected up front. Coupled terms
+are checked with sparse Cholesky factorization during native model construction,
+before solving. The check normalizes the objective matrix and uses a relative
+diagonal tolerance of `1e-12` to accept semidefinite objectives. Failed curvature
+checks return `INVALID_ARGUMENT`; native execution failures return `INTERNAL`.
 
 The shared [JSON fixtures](../examples/models) use protobuf field names and numeric
 objective senses. Each fixture wraps the solve request in a `request` field and
@@ -73,7 +94,8 @@ apply to that job only:
 Indices are zero-based positions in the session model and may appear once per
 list. A `BoundOverride` replaces both sides; an omitted side means infinity, as
 in the model. Anything not overridden keeps its session-model value. Constraint
-coefficients and the objective sense cannot change within a session.
+coefficients, quadratic objective terms, and the objective sense cannot change
+within a session.
 
 Results and per-job errors are the same as for `SolveStream`. A bad override
 fails only its job. A missing or invalid model, or a second model, ends the call
@@ -97,7 +119,9 @@ Treat the objective as optimal only when the status is `OPTIMAL`.
 
 With diagnostics enabled, the solution includes constraint activities and, when
 HiGHS reports dual feasibility, a `dual` submessage. Dual signs follow HiGHS's
-objective-sense convention; reduced costs satisfy `c - Aᵀy`. Degenerate optima
+objective-sense convention; reduced costs satisfy `c - Aᵀy`, or `c + g - Aᵀy`
+with a quadratic objective, where `g` is the gradient of the quadratic terms at
+the solution. QP duals are returned only for optimal solves. Degenerate optima
 may have different valid dual solutions.
 
 Every result includes execution settings (CPU budget, solver threads, and solve
@@ -108,7 +132,7 @@ Timings exclude networking, encoding, result extraction, and executor scheduling
 
 | Failure | Canonical gRPC code |
 | --- | --- |
-| Invalid model or request | `INVALID_ARGUMENT` |
+| Invalid model or request, including a non-convex quadratic objective | `INVALID_ARGUMENT` |
 | Capacity or size limit | `RESOURCE_EXHAUSTED` |
 | Native execution failure | `INTERNAL` |
 

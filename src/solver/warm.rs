@@ -11,7 +11,7 @@ use highs_sys::{
 
 use crate::{
     model::{Error, Result},
-    pb::{LinearProgram, ObjectiveSense},
+    pb::{ObjectiveSense, Problem},
 };
 
 /// A session's reusable model; empty while a job uses it or after a failed job.
@@ -80,14 +80,15 @@ fn lock(slot: &WarmModel) -> MutexGuard<'_, Option<Warm>> {
 
 impl Warm {
     /// True when costs and bounds can be copied without changing the matrix or sense.
-    pub(super) fn compatible(&self, input: &LinearProgram) -> bool {
+    /// Quadratic terms are fixed per session, so the native Hessian already matches.
+    pub(super) fn compatible(&self, input: &Problem) -> bool {
         self.0.num_cols() == input.variables.len()
             && self.0.num_rows() == input.constraints.len()
             && objective_sense(&self.0) == Some(expected_sense(input))
     }
 
     /// Copies costs and bounds from `input`. The caller must check [`Self::compatible`].
-    pub(super) fn refresh(self, input: &LinearProgram) -> Result<Model> {
+    pub(super) fn refresh(self, input: &Problem) -> Result<Model> {
         if !self.compatible(input) {
             return Err(Error::Internal(
                 "warm model structure does not match the request".into(),
@@ -149,7 +150,7 @@ fn objective_sense(model: &Model) -> Option<HighsInt> {
     (status == kHighsStatusOk).then_some(sense)
 }
 
-fn expected_sense(input: &LinearProgram) -> HighsInt {
+fn expected_sense(input: &Problem) -> HighsInt {
     if input.sense == ObjectiveSense::Maximize as i32 {
         OBJECTIVE_SENSE_MAXIMIZE
     } else {
@@ -242,6 +243,40 @@ mod tests {
             let objective = |r: &crate::pb::SolveResult| r.solution.as_ref().unwrap().objective;
             assert!((objective(&reused) - objective(&fresh)).abs() < 1e-6);
         }
+    }
+
+    #[test]
+    fn warm_quadratic_models_keep_their_hessian() {
+        let base = crate::samples::fixture("quadratic").unwrap().request;
+        let warm = WarmModel::default();
+        let cancel = CancellationToken::new();
+        solve_inner(
+            base.clone(),
+            &Config::default(),
+            None,
+            &cancel,
+            Some(&warm),
+            None,
+        )
+        .unwrap();
+        let mut shifted = base;
+        shifted.model.as_mut().unwrap().variables[0].objective = -5.0;
+        let fresh = solve(shifted.clone(), &Config::default(), None, &cancel).unwrap();
+        let reused = solve_inner(
+            shifted,
+            &Config::default(),
+            None,
+            &cancel,
+            Some(&warm),
+            None,
+        )
+        .unwrap();
+        assert!(warm.lock().unwrap().is_some());
+        // Without the Hessian this objective is unbounded below.
+        assert_eq!(reused.status, SolveStatus::Optimal as i32);
+        let objective = |r: &crate::pb::SolveResult| r.solution.as_ref().unwrap().objective;
+        assert!((objective(&reused) - objective(&fresh)).abs() < 1e-6);
+        assert!((objective(&reused) + 4.25).abs() < 1e-6);
     }
 
     #[test]

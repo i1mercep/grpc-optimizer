@@ -5,10 +5,33 @@ import unittest
 import pyomo.environ as pyo
 from pyomo.gdp import Disjunct
 
+from grpc_optimizer.adapter import prepare_model
 from pyomo_adapter import pb, to_solve_request
+from pyomo_client import build_model
 
 
 class PyomoAdapterTests(unittest.TestCase):
+    def test_client_examples_support_linear_and_quadratic_models(self):
+        linear = prepare_model(build_model(), "linear-example")
+        self.assertEqual([variable.objective for variable in linear.request.model.variables], [40, 30])
+        self.assertFalse(linear.request.model.quadratic_coefficients)
+        quadratic = prepare_model(build_model(quadratic=True), "quadratic-example")
+        self.assertEqual(quadratic.objective_constant, 5)
+        self.assertEqual(list(quadratic.request.model.quadratic_coefficients), [1, 1])
+        self.assertEqual(quadratic.request.model.constraints[0].upper, 2)
+
+    def test_linear_program_and_problem_names_are_compatible(self):
+        self.assertIs(pb.Problem, pb.LinearProgram)
+        self.assertEqual(pb.Problem.DESCRIPTOR.full_name, "optimization.v1.LinearProgram")
+        legacy = pb.LinearProgram(
+            sense=pb.OBJECTIVE_SENSE_MINIMIZE,
+            variables=[pb.Variable(objective=3, lower=0)],
+        )
+        request = pb.SolveRequest(request_id="legacy", model=legacy)
+        restored = pb.SolveRequest.FromString(request.SerializeToString())
+        self.assertEqual(restored.model, legacy)
+        self.assertIsInstance(restored.model, pb.Problem)
+
     def model(self):
         model = pyo.ConcreteModel()
         model.x = pyo.Var()
@@ -140,13 +163,32 @@ class PyomoAdapterTests(unittest.TestCase):
 
     def test_rejects_nonlinear_objective_and_constraint(self):
         model = self.model()
-        model.objective.set_value(model.x**2)
-        with self.assertRaisesRegex(ValueError, "objective must be linear"):
-            to_solve_request(model)
+        for expression in (model.x**3, pyo.sin(model.x)):
+            with self.subTest(expression=str(expression)):
+                model.objective.set_value(expression)
+                with self.assertRaisesRegex(ValueError, "objective must be linear or quadratic"):
+                    to_solve_request(model)
         model.objective.set_value(model.x)
-        model.row = pyo.Constraint(expr=pyo.sin(model.x) <= 0)
+        model.row = pyo.Constraint(expr=model.x**2 <= 1)
         with self.assertRaisesRegex(ValueError, "row must be linear"):
             to_solve_request(model)
+
+    def test_quadratic_objective_merges_pairs_and_substitutes_fixed_variables(self):
+        model = pyo.ConcreteModel()
+        model.x = pyo.Var()
+        model.y = pyo.Var()
+        model.fixed = pyo.Var(initialize=2)
+        model.fixed.fix()
+        model.objective = pyo.Objective(
+            expr=model.y**2 + 3 * model.x * model.y + model.y * model.x + model.fixed * model.x + model.fixed**2
+        )
+        prepared = prepare_model(model, "quadratic")
+        problem = prepared.request.model
+        self.assertEqual(list(problem.quadratic_rows), [0, 1])
+        self.assertEqual(list(problem.quadratic_columns), [1, 1])
+        self.assertEqual(list(problem.quadratic_coefficients), [4, 1])
+        self.assertEqual([v.objective for v in problem.variables], [2, 0])
+        self.assertEqual(prepared.objective_constant, 4)
 
     def test_rejects_unsupported_components(self):
         for component in (pyo.SOSConstraint, Disjunct):

@@ -1,8 +1,8 @@
 # grpc-optimizer
 
-A gRPC service that solves continuous linear programs (LPs) with
-[HiGHS](https://highs.dev). Send a model, get the solution back. The server keeps
-no state, so you can run as many copies as you need.
+A gRPC service that solves continuous linear programs (LPs) and convex quadratic
+programs (QPs) with [HiGHS](https://highs.dev). Send a model, get the solution
+back. The server keeps no state, so you can run as many copies as you need.
 
 The Python SDK takes [Pyomo](https://www.pyomo.org) models, sends them to the
 server, and writes the solution back into the model.
@@ -130,12 +130,15 @@ if result.is_optimal:
   is no solution, `result.objective` is `None` and the model is left unchanged.
 - Options: `timeout=30` (whole-call deadline, seconds), `time_limit=` (solver
   budget), `load_solution=False` (leave the model untouched).
-- Supported: continuous linear models with one objective, indexed components,
-  fixed variables, and equality or ranged constraints. Integer, binary, and
-  nonlinear models raise `ValueError`.
+- Supported: continuous models with one linear or convex quadratic objective,
+  linear constraints, indexed components, fixed variables, and equality or ranged
+  constraints. Integer, binary, quadratic-constraint, and other nonlinear models
+  raise `ValueError`.
 
 Run a complete example with `just python-pyomo-client`
-([source](clients/python/pyomo_client.py)).
+([source](clients/python/pyomo_client.py)). For a convex QP, run
+`just python-pyomo-client --quadratic`; its projection example returns
+`x = 0.5`, `y = 1.5`, and objective `0.5`.
 
 ### Re-solve one model as data changes
 
@@ -168,8 +171,9 @@ Output:
 10 OPTIMAL 37.0
 ```
 
-- Objective coefficients, variable bounds, and constraint bounds may change.
-  Other changes raise `ValueError`; create a new `GrpcOptimizer`.
+- Linear objective coefficients, variable bounds, and constraint bounds may
+  change. Other changes, including quadratic objective terms, raise `ValueError`;
+  create a new `GrpcOptimizer`.
 - The optimizer keeps one call open on the server; use `with` or `close()`.
 - In async code, use `AsyncGrpcOptimizer` and `await optimizer.solve()`.
 

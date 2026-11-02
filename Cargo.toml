@@ -19,6 +19,7 @@ path = "src/bin/bench.rs"
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
+faer = { version = "0.24", default-features = false, features = ["std", "sparse-linalg"] }
 futures = "0.3"
 highs = "2.4"
 highs-sys = "=1.15.0"
