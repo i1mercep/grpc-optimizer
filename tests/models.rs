@@ -276,6 +276,59 @@ fn coupled_quadratic_curvature_is_checked_beyond_variable_pairs() {
 }
 
 #[test]
+fn quadratic_curvature_check_caps_factor_fill_in() {
+    // A 3D grid coupling fills its Cholesky factor far beyond its own nonzeros.
+    const SIDE: u32 = 16;
+    let index = |x: u32, y: u32, z: u32| (x * SIDE + y) * SIDE + z;
+    let mut request = samples::fixture("quadratic").unwrap().request;
+    let model = request.model.as_mut().unwrap();
+    model.constraints.clear();
+    model.variables = (0..SIDE.pow(3))
+        .map(|_| grpc_optimizer::pb::Variable {
+            lower: Some(-1.0),
+            upper: Some(1.0),
+            ..Default::default()
+        })
+        .collect();
+    let (mut rows, mut columns, mut coefficients) = (vec![], vec![], vec![]);
+    for x in 0..SIDE {
+        for y in 0..SIDE {
+            for z in 0..SIDE {
+                let i = index(x, y, z);
+                let neighbors = [(x + 1, y, z), (x, y + 1, z), (x, y, z + 1)];
+                rows.push(i);
+                columns.push(i);
+                coefficients.push(6.0);
+                for (nx, ny, nz) in neighbors {
+                    if nx < SIDE && ny < SIDE && nz < SIDE {
+                        rows.push(i);
+                        columns.push(index(nx, ny, nz));
+                        coefficients.push(-1.0);
+                    }
+                }
+            }
+        }
+    }
+    let terms = coefficients.len();
+    (
+        model.quadratic_rows,
+        model.quadratic_columns,
+        model.quadratic_coefficients,
+    ) = (rows, columns, coefficients);
+    let tight = Config {
+        max_nonzeros: terms,
+        ..Config::default()
+    };
+    let result = solver::solve(request.clone(), &tight, None, &CancellationToken::new());
+    assert!(
+        matches!(&result, Err(Error::Exhausted(message)) if message.contains("factorization")),
+        "{result:?}"
+    );
+    let result = solver::solve(request, &Config::default(), None, &CancellationToken::new());
+    assert_eq!(result.unwrap().status, SolveStatus::Optimal as i32);
+}
+
+#[test]
 fn mixed_scale_indefinite_quadratic_objective_is_invalid() {
     let mut request = samples::fixture("quadratic").unwrap().request;
     let model = request.model.as_mut().unwrap();

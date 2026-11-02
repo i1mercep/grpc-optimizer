@@ -3,8 +3,9 @@
 use std::collections::HashSet;
 
 use faer::{
-    Side,
-    sparse::{SparseColMat, Triplet, linalg::LltError},
+    Par, Side,
+    dyn_stack::{MemBuffer, MemStack},
+    sparse::{SparseColMat, Triplet, linalg::cholesky::factorize_symbolic_cholesky},
 };
 
 use crate::{
@@ -163,8 +164,14 @@ fn validate_quadratic(model: &Problem, nonzeros: usize, config: &Config) -> Resu
     Ok(())
 }
 
+/// Cholesky factor values allowed per configured model nonzero during curvature checks.
+const FACTOR_VALUES_PER_NONZERO: usize = 8;
+
 /// Equilibrates the objective matrix before testing it with a diagonal tolerance of 1e-12.
-pub(crate) fn validate_curvature(model: &Problem) -> Result<()> {
+///
+/// Symbolic analysis runs first, so objectives whose factor would exceed
+/// [`FACTOR_VALUES_PER_NONZERO`] times `max_nonzeros` are rejected before any numeric work.
+pub(crate) fn validate_curvature(model: &Problem, config: &Config) -> Result<()> {
     let pairs = std::iter::zip(&model.quadratic_rows, &model.quadratic_columns);
     if !pairs
         .zip(&model.quadratic_coefficients)
@@ -207,15 +214,51 @@ pub(crate) fn validate_curvature(model: &Problem) -> Result<()> {
     }
     let matrix = SparseColMat::<usize, f64>::try_new_from_triplets(dimension, dimension, &entries)
         .map_err(|error| Error::Exhausted(format!("quadratic validation matrix: {error}")))?;
-    match matrix.sp_cholesky(Side::Lower) {
-        Ok(_) => Ok(()),
-        Err(LltError::Numeric(_)) => Err(Error::Invalid(
-            "quadratic objective must be convex when minimizing and concave when maximizing".into(),
-        )),
-        Err(LltError::Generic(error)) => {
-            Err(Error::Exhausted(format!("quadratic validation: {error}")))
-        }
+    let exhausted =
+        |error: &dyn std::fmt::Display| Error::Exhausted(format!("quadratic validation: {error}"));
+    let symbolic = factorize_symbolic_cholesky(
+        matrix.symbolic(),
+        Side::Lower,
+        Default::default(),
+        Default::default(),
+    )
+    .map_err(|error| exhausted(&error))?;
+    let limit = config
+        .max_nonzeros
+        .saturating_mul(FACTOR_VALUES_PER_NONZERO);
+    if symbolic.len_val() > limit {
+        return Err(Error::Exhausted(format!(
+            "quadratic objective factorization needs {} values; the limit is {limit}",
+            symbolic.len_val()
+        )));
     }
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(symbolic.len_val())
+        .map_err(|error| exhausted(&error))?;
+    values.resize(symbolic.len_val(), 0.0_f64);
+    let mut buffer = MemBuffer::try_new(
+        symbolic.factorize_numeric_llt_scratch::<f64>(Par::Seq, Default::default()),
+    )
+    .map_err(|_| Error::Exhausted("quadratic validation: out of memory".into()))?;
+    // Numeric factorization fails only on a non-positive pivot.
+    symbolic
+        .factorize_numeric_llt::<f64>(
+            &mut values,
+            matrix.as_ref(),
+            Side::Lower,
+            Default::default(),
+            Par::Seq,
+            MemStack::new(&mut buffer),
+            Default::default(),
+        )
+        .map(|_| ())
+        .map_err(|_| {
+            Error::Invalid(
+                "quadratic objective must be convex when minimizing and concave when maximizing"
+                    .into(),
+            )
+        })
 }
 
 /// Builds a job from a session model and sparse input overrides.

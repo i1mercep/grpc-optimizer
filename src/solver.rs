@@ -168,7 +168,7 @@ pub(crate) fn solve_inner(
 
 /// Builds a quiet native model with the configured thread settings.
 fn build(input: &Problem, config: &Config) -> Result<Model> {
-    model::validate_curvature(input)?;
+    model::validate_curvature(input, config)?;
     let mut problem = RowProblem::new();
     let columns: Vec<_> = input
         .variables

@@ -66,6 +66,8 @@ are checked with sparse Cholesky factorization during native model construction,
 before solving. The check normalizes the objective matrix and uses a relative
 diagonal tolerance of `1e-12` to accept semidefinite objectives. Failed curvature
 checks return `INVALID_ARGUMENT`; native execution failures return `INTERNAL`.
+If the Cholesky factor would hold more than 8 × `OPT_MAX_NONZEROS` values, the
+request returns `RESOURCE_EXHAUSTED` before numeric factorization.
 
 The shared [JSON fixtures](../examples/models) use protobuf field names and numeric
 objective senses. Each fixture wraps the solve request in a `request` field and

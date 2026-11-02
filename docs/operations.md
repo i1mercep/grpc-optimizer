@@ -21,7 +21,7 @@ taking precedence. Directly launched binaries do not load `.env`.
 | `OPT_MAX_TIME_LIMIT_SECONDS` | `300` | Maximum solver time budget |
 | `OPT_MAX_VARIABLES` | `100000` | Variables per model |
 | `OPT_MAX_CONSTRAINTS` | `100000` | Constraint rows per model |
-| `OPT_MAX_NONZEROS` | `1000000` | Stored constraint and quadratic objective coefficients per model |
+| `OPT_MAX_NONZEROS` | `1000000` | Stored constraint and quadratic objective coefficients per model; the QP curvature check also caps its Cholesky factor at 8 × this value |
 
 CPU settings must satisfy `concurrent solves × solver threads ≤ CPU budget`.
 The default solve concurrency is the integer quotient of budget and threads.
